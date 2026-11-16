@@ -1,5 +1,6 @@
 //! Modelo de dados e algoritmos puros (sem I/O) do Storage Scanner.
 
+pub mod export;
 pub mod ext_stats;
 pub mod format;
 pub mod metrics;

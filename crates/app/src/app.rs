@@ -12,6 +12,7 @@ use ss_scan::volumes::{self, VolumeInfo};
 use ss_scan::{Labels, ScanError, elevation};
 
 use crate::actions::{self, ActionJob, MenuAction};
+use crate::config::Config;
 use crate::state::{JobPoll, ScanJob, ScanResult};
 use crate::ui::context_menu::{self, ConfirmDelete, MenuInfo, MenuState};
 use crate::ui::dialogs::{self, ErrorDialog};
@@ -43,6 +44,8 @@ pub struct App {
     settings_open: bool,
     explorer_registered: bool,
     notice: Option<String>,
+    config: Config,
+    export_rx: Option<crossbeam_channel::Receiver<Result<(PathBuf, u64), String>>>,
     // --- dispositivos MTP ---
     mtp_devices: Vec<MtpDevice>,
     device_rx: Option<crossbeam_channel::Receiver<Vec<MtpDevice>>>,
@@ -51,11 +54,13 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_target: Option<PathBuf>) -> Self {
-        theme::apply(&cc.egui_ctx);
+        let (config, config_warning) = Config::load();
+        theme::apply(&cc.egui_ctx, config.theme);
+        let metric = config.metric();
         let path = initial_target
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .unwrap_or_else(|| config.last_path.clone());
         Self {
             pending_start: initial_target.is_some(),
             path,
@@ -63,11 +68,11 @@ impl App {
             elevated: elevation::is_elevated(),
             job: None,
             result: None,
-            tree_view: TreeViewState::new(Metric::Size),
+            tree_view: TreeViewState::new(metric),
             treemap: TreemapState::new(),
             ext_panel: ExtPanelState::default(),
             highlight_ext: None,
-            metric: Metric::Size,
+            metric,
             error: None,
             elevate_error: None,
             hwnd: None,
@@ -76,7 +81,9 @@ impl App {
             confirm_delete: None,
             settings_open: false,
             explorer_registered: explorer_integration::is_registered(),
-            notice: None,
+            notice: config_warning.map(|d| t!("config.warning", detail = d).to_string()),
+            config,
+            export_rx: None,
             mtp_devices: Vec::new(),
             device_rx: None,
             selected_device: None,
@@ -120,6 +127,10 @@ impl App {
             .selected_device
             .clone()
             .filter(|d| crate::ui::drive_picker::device_label(d) == self.path);
+        if device.is_none() {
+            self.config.remember(self.path.trim());
+            let _ = self.config.save();
+        }
         self.job = Some(ScanJob::start(ctx, target, device, Self::labels()));
     }
 
@@ -264,7 +275,7 @@ impl App {
                     t!("banner.fallback", reason = reason.as_str()).to_string(),
                 );
             }
-            let events = self.tree_view.show(ui, &r.tree);
+            let events = self.tree_view.show(ui, &r.tree, &self.config.columns);
             if let Some(node) = events.context_menu {
                 self.ctx_menu = Some(MenuState {
                     node,
@@ -440,6 +451,208 @@ impl App {
         self.start_action(job);
     }
 
+    fn browse_folder(&mut self) {
+        if self.job.is_some() {
+            return;
+        }
+        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            self.path = dir.to_string_lossy().into_owned();
+            self.selected_device = None;
+        }
+    }
+
+    /// Exporta a árvore atual para CSV em uma thread de fundo.
+    fn export_csv(&mut self) {
+        let Some(r) = &self.result else { return };
+        if self.export_rx.is_some() {
+            return;
+        }
+        let root = r.tree.name(ss_core::Tree::ROOT);
+        let safe: String = root
+            .chars()
+            .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
+            .collect();
+        let default = format!(
+            "{}-{}.csv",
+            t!("export.default_name"),
+            safe.trim_matches('_')
+        );
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(t!("export.title").to_string())
+            .set_file_name(default)
+            .add_filter("CSV", &["csv"])
+            .save_file()
+        else {
+            return;
+        };
+        let tree = r.tree.clone();
+        let labels = ss_core::export::CsvLabels {
+            headers: [
+                t!("export.h_path").to_string(),
+                t!("export.h_type").to_string(),
+                t!("export.h_size").to_string(),
+                t!("export.h_allocated").to_string(),
+                t!("export.h_files").to_string(),
+                t!("export.h_dirs").to_string(),
+                t!("export.h_modified").to_string(),
+                t!("export.h_compression").to_string(),
+            ],
+            dir: t!("export.type_dir").to_string(),
+            file: t!("export.type_file").to_string(),
+        };
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let res = std::fs::File::create(&path)
+                .map(std::io::BufWriter::new)
+                .and_then(|w| ss_core::export::write_csv(&tree, w, &labels))
+                .map(|rows| (path, rows))
+                .map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        });
+        self.export_rx = Some(rx);
+    }
+
+    fn poll_export(&mut self) {
+        let Some(rx) = &self.export_rx else { return };
+        match rx.try_recv() {
+            Ok(Ok((path, rows))) => {
+                self.notice = Some(
+                    t!(
+                        "export.done",
+                        path = path.display().to_string(),
+                        rows = format_count(rows)
+                    )
+                    .to_string(),
+                );
+                self.export_rx = None;
+            }
+            Ok(Err(e)) => {
+                self.show_error(t!("export.failed", error = e).to_string());
+                self.export_rx = None;
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+            Err(crossbeam_channel::TryRecvError::Disconnected) => self.export_rx = None,
+        }
+    }
+
+    /// Executa `action` sobre `node` somente se o menu de contexto também a permitiria.
+    fn try_action(&mut self, ctx: &egui::Context, action: MenuAction, node: u32) {
+        let Some(info) = self.menu_info(node) else {
+            return;
+        };
+        let destructive_ok = info.exists && !info.protected;
+        let allowed = if info.mtp {
+            matches!(
+                action,
+                MenuAction::CopyPath | MenuAction::DeletePermanent | MenuAction::CopyTo
+            )
+        } else {
+            match action {
+                MenuAction::CopyPath => true,
+                MenuAction::Open
+                | MenuAction::Reveal
+                | MenuAction::Zip
+                | MenuAction::CopyTo
+                | MenuAction::NativeMenu => info.exists,
+                MenuAction::Recycle | MenuAction::DeletePermanent | MenuAction::MoveTo => {
+                    destructive_ok
+                }
+                MenuAction::Compress(_) => info.ntfs && destructive_ok,
+            }
+        };
+        if allowed && self.action.is_none() {
+            self.run_menu_action(ctx, action, node);
+        }
+    }
+
+    /// Atalhos de teclado. `menu_was_open`: o Esc já fechou o menu de contexto neste quadro.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context, menu_was_open: bool) {
+        use egui::{Key, Modifiers as M};
+        let modal = self.confirm_delete.is_some() || self.error.is_some() || self.settings_open;
+        let typing = ctx.egui_wants_keyboard_input();
+        let (ctrl_o, f5, esc, ctrl_e, shift_del, del, ctrl_c, ctrl_enter, enter, alt_up) = ctx
+            .input_mut(|i| {
+                (
+                    i.consume_key(M::CTRL, Key::O),
+                    i.consume_key(M::NONE, Key::F5),
+                    i.consume_key(M::NONE, Key::Escape),
+                    i.consume_key(M::CTRL, Key::E),
+                    i.consume_key(M::SHIFT, Key::Delete),
+                    i.consume_key(M::NONE, Key::Delete),
+                    i.consume_key(M::CTRL, Key::C),
+                    i.consume_key(M::CTRL, Key::Enter),
+                    i.consume_key(M::NONE, Key::Enter),
+                    i.consume_key(M::ALT, Key::ArrowUp),
+                )
+            });
+        if modal {
+            return;
+        }
+        if esc
+            && !menu_was_open
+            && let Some(job) = &self.job
+        {
+            job.stop();
+        }
+        if ctrl_o {
+            self.browse_folder();
+            if self.job.is_none() && !self.path.trim().is_empty() {
+                self.start_scan(ctx);
+            }
+        }
+        if f5 && self.job.is_none() && !self.path.trim().is_empty() {
+            self.start_scan(ctx);
+        }
+        if ctrl_e && self.job.is_none() {
+            self.export_csv();
+        }
+        if self.job.is_some() || self.result.is_none() || typing {
+            return;
+        }
+        if alt_up
+            && let Some(r) = &self.result
+            && let Some(p) = r.tree.parent(self.treemap.zoom)
+        {
+            self.treemap.zoom = p;
+        }
+        let Some(sel) = self.tree_view.selected else {
+            // Sem seleção, as setas escolhem o primeiro item.
+            if let Some(r) = &self.result {
+                for key in [Key::ArrowDown, Key::ArrowUp] {
+                    if ctx.input_mut(|i| i.consume_key(M::NONE, key)) {
+                        self.tree_view.key_nav(&r.tree, key);
+                    }
+                }
+            }
+            return;
+        };
+        if shift_del {
+            self.try_action(ctx, MenuAction::DeletePermanent, sel);
+        } else if del {
+            self.try_action(ctx, MenuAction::Recycle, sel);
+        }
+        if ctrl_c {
+            self.try_action(ctx, MenuAction::CopyPath, sel);
+        }
+        if ctrl_enter {
+            self.try_action(ctx, MenuAction::Open, sel);
+        } else if enter {
+            self.tree_view.toggle(sel);
+        }
+        if let Some(r) = &self.result {
+            for key in [
+                Key::ArrowDown,
+                Key::ArrowUp,
+                Key::ArrowLeft,
+                Key::ArrowRight,
+            ] {
+                if ctx.input_mut(|i| i.consume_key(M::NONE, key)) {
+                    self.tree_view.key_nav(&r.tree, key);
+                }
+            }
+        }
+    }
+
     fn handle_context_menu(&mut self, ctx: &egui::Context) {
         let Some(state) = &self.ctx_menu else { return };
         let node = state.node;
@@ -479,20 +692,32 @@ impl eframe::App for App {
 
         let mut tb = toolbar::ToolbarOutput::default();
         egui::Panel::top("toolbar").show(ui, |ui| {
-            tb = toolbar::show(
-                ui,
-                &mut self.path,
-                &self.volumes,
-                &self.mtp_devices,
-                self.job.is_some(),
-                &mut self.metric,
-            );
+            let input = toolbar::ToolbarInput {
+                volumes: &self.volumes,
+                devices: &self.mtp_devices,
+                scanning: self.job.is_some(),
+                recent: &self.config.recent_paths,
+                can_export: self.result.is_some() && self.job.is_none(),
+            };
+            tb = toolbar::show(ui, &mut self.path, &mut self.metric, &input);
         });
         if self.metric != self.tree_view.metric {
             self.tree_view.set_metric(self.metric);
         }
         if let Some(d) = tb.picked_device.take() {
             self.selected_device = Some(d);
+        }
+        if let Some(p) = tb.picked_recent.take() {
+            self.path = p;
+            self.selected_device = None;
+            tb.analyze = true;
+        }
+        if tb.browse {
+            self.browse_folder();
+            tb.analyze = self.job.is_none() && !self.path.trim().is_empty();
+        }
+        if tb.export_csv {
+            self.export_csv();
         }
         if tb.refresh_drives {
             self.volumes = volumes::list_volumes();
@@ -571,6 +796,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
 
+        let menu_was_open = self.ctx_menu.is_some();
         self.handle_context_menu(&ctx);
 
         if let Some(c) = &self.confirm_delete {
@@ -612,7 +838,23 @@ impl eframe::App for App {
 
         if self.settings_open {
             let mut registered = self.explorer_registered;
-            if dialogs::show_settings(&ctx, &mut self.settings_open, &mut registered) {
+            let before = self.config.metric.clone();
+            let ch = dialogs::show_settings(
+                &ctx,
+                &mut self.settings_open,
+                &mut self.config,
+                &mut registered,
+            );
+            if ch.config {
+                theme::apply(&ctx, self.config.theme);
+                if self.config.metric != before {
+                    self.metric = self.config.metric();
+                }
+                if let Err(e) = self.config.save() {
+                    self.show_error(t!("action.failed", error = e.to_string()).to_string());
+                }
+            }
+            if ch.explorer {
                 let res = if registered {
                     std::env::current_exe()
                         .map_err(ss_ops::OpError::from)
@@ -636,5 +878,8 @@ impl eframe::App for App {
         {
             self.error = None;
         }
+
+        self.poll_export();
+        self.handle_shortcuts(&ctx, menu_was_open);
     }
 }

@@ -2,8 +2,8 @@
 
 use egui::Color32;
 
-pub fn apply(ctx: &egui::Context) {
-    ctx.set_visuals(egui::Visuals::dark());
+pub fn apply(ctx: &egui::Context, choice: crate::config::ThemeChoice) {
+    ctx.set_theme(choice.preference());
 }
 
 /// Gradiente da barra de percentual: azul-esverdeado (pouco) → amarelo → vermelho (muito).

@@ -15,6 +15,10 @@ pub struct ToolbarOutput {
     pub open_settings: bool,
     /// Dispositivo MTP escolhido no seletor.
     pub picked_device: Option<MtpDevice>,
+    /// Alvo escolhido na lista de recentes.
+    pub picked_recent: Option<String>,
+    pub export_csv: bool,
+    pub browse: bool,
 }
 
 pub fn metric_label(m: Metric) -> String {
@@ -28,14 +32,28 @@ pub fn metric_label(m: Metric) -> String {
     .to_string()
 }
 
+/// Dados somente leitura exibidos na barra.
+pub struct ToolbarInput<'a> {
+    pub volumes: &'a [VolumeInfo],
+    pub devices: &'a [MtpDevice],
+    pub scanning: bool,
+    pub recent: &'a [String],
+    pub can_export: bool,
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     path: &mut String,
-    volumes: &[VolumeInfo],
-    devices: &[MtpDevice],
-    scanning: bool,
     metric: &mut Metric,
+    input: &ToolbarInput<'_>,
 ) -> ToolbarOutput {
+    let ToolbarInput {
+        volumes,
+        devices,
+        scanning,
+        recent,
+        can_export,
+    } = *input;
     let mut out = ToolbarOutput::default();
     ui.horizontal(|ui| {
         ui.label(t!("toolbar.metric"));
@@ -69,21 +87,38 @@ pub fn show(
             {
                 out.refresh_drives = true;
             }
-            if ui.button(t!("toolbar.browse")).clicked()
-                && let Some(dir) = rfd::FileDialog::new().pick_folder()
-            {
-                *path = dir.to_string_lossy().into_owned();
-                out.analyze = true;
+            if ui.button(t!("toolbar.browse")).clicked() {
+                out.browse = true;
             }
+            ui.menu_button("🕘", |ui| {
+                if recent.is_empty() {
+                    ui.weak(t!("toolbar.no_recent").to_string());
+                }
+                for r in recent {
+                    if ui.button(r).clicked() {
+                        out.picked_recent = Some(r.clone());
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(t!("toolbar.recent"));
             let edit = ui.add(
                 egui::TextEdit::singleline(path)
                     .hint_text(t!("toolbar.path_hint"))
-                    .desired_width((ui.available_width() - 230.0).max(120.0)),
+                    .desired_width((ui.available_width() - 330.0).max(120.0)),
             );
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 out.analyze = true;
             }
         });
+        if ui
+            .add_enabled(can_export, egui::Button::new(t!("toolbar.export_short")))
+            .on_hover_text(t!("toolbar.export_csv"))
+            .clicked()
+        {
+            out.export_csv = true;
+        }
         if ui
             .button("⚙")
             .on_hover_text(t!("toolbar.settings"))

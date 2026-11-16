@@ -11,6 +11,7 @@ use ss_core::sort::{SortKey, sort_children_by};
 use ss_core::{Metric, NodeId, Tree, flags};
 
 use super::theme;
+use crate::config::Columns;
 
 const ROW_HEIGHT: f32 = 20.0;
 const INDENT: f32 = 14.0;
@@ -129,8 +130,56 @@ impl TreeViewState {
         self.flat = flat;
     }
 
+    /// Navegação por teclado. `Up`/`Down` movem a seleção; `Right` expande ou desce ao primeiro
+    /// filho; `Left` recolhe ou sobe ao pai. Devolve o nó recém-selecionado, se mudou.
+    pub fn key_nav(&mut self, tree: &Tree, key: egui::Key) -> Option<NodeId> {
+        if self.dirty {
+            self.rebuild(tree);
+        }
+        let pos = self
+            .selected
+            .and_then(|s| self.flat.iter().position(|&(n, _)| n == s));
+        let new = match (key, pos) {
+            (egui::Key::ArrowDown, Some(p)) => self.flat.get(p + 1).map(|x| x.0),
+            (egui::Key::ArrowUp, Some(p)) if p > 0 => Some(self.flat[p - 1].0),
+            (egui::Key::ArrowDown | egui::Key::ArrowUp, None) => self.flat.first().map(|x| x.0),
+            (egui::Key::ArrowRight, Some(p)) => {
+                let id = self.flat[p].0;
+                let n = tree.node(id);
+                if n.is_dir() && n.child_count > 0 {
+                    if self.expanded.contains(&id) {
+                        self.flat.get(p + 1).map(|x| x.0)
+                    } else {
+                        self.toggle(id);
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            (egui::Key::ArrowLeft, Some(p)) => {
+                let id = self.flat[p].0;
+                if tree.node(id).is_dir() && self.expanded.contains(&id) && id != Tree::ROOT {
+                    self.toggle(id);
+                    None
+                } else {
+                    tree.parent(id)
+                }
+            }
+            _ => None,
+        };
+        if let Some(n) = new {
+            self.selected = Some(n);
+            if self.dirty {
+                self.rebuild(tree);
+            }
+            self.scroll_to = self.flat.iter().position(|&(x, _)| x == n);
+        }
+        new
+    }
+
     /// Desenha a árvore. Devolve o nó cujo menu de contexto foi pedido, se houver.
-    pub fn show(&mut self, ui: &mut egui::Ui, tree: &Tree) -> TreeEvents {
+    pub fn show(&mut self, ui: &mut egui::Ui, tree: &Tree, cols: &Columns) -> TreeEvents {
         if self.dirty {
             self.rebuild(tree);
         }
@@ -144,19 +193,35 @@ impl TreeViewState {
         let sel = self.selected;
         let (sort, desc) = (self.sort, self.descending);
 
+        let vis = cols.as_array();
+        // (largura inicial, largura mínima) de cada coluna; a última visível ocupa o resto.
+        let widths = [
+            (340.0, 140.0),
+            (120.0, 80.0),
+            (90.0, 60.0),
+            (90.0, 60.0),
+            (80.0, 50.0),
+            (70.0, 50.0),
+            (120.0, 80.0),
+            (100.0, 70.0),
+        ];
+        let last = (0..8).rev().find(|&i| vis[i]).unwrap_or(0);
         let mut table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(340.0).at_least(140.0).clip(true))
-            .column(Column::initial(120.0).at_least(80.0))
-            .column(Column::initial(90.0).at_least(60.0))
-            .column(Column::initial(90.0).at_least(60.0))
-            .column(Column::initial(80.0).at_least(50.0))
-            .column(Column::initial(70.0).at_least(50.0))
-            .column(Column::initial(120.0).at_least(80.0))
-            .column(Column::remainder().at_least(70.0));
+            .cell_layout(Layout::left_to_right(Align::Center));
+        for (i, (initial, min)) in widths.iter().enumerate() {
+            if !vis[i] {
+                continue;
+            }
+            let c = if i == last {
+                Column::remainder().at_least(*min)
+            } else {
+                Column::initial(*initial).at_least(*min)
+            };
+            table = table.column(if i == 0 { c.clip(true) } else { c });
+        }
         if let Some(row) = self.scroll_to.take() {
             table = table.scroll_to_row(row, Some(Align::Center));
         }
@@ -178,6 +243,9 @@ impl TreeViewState {
         table
             .header(22.0, |mut header| {
                 for (i, (key, label)) in headers.iter().enumerate() {
+                    if !vis[i] {
+                        continue;
+                    }
                     header.col(|ui| {
                         // A coluna "% do pai" ordena por tamanho, junto com "Tamanho"; só a
                         // segunda marca a seta, evitando duas setas ao mesmo tempo.
@@ -250,45 +318,59 @@ impl TreeViewState {
                     });
 
                     // % do pai
-                    row.col(|ui| {
-                        let frac = match tree.parent(id) {
-                            Some(p) => {
-                                let base = metric.weight(tree.node(p));
-                                if base == 0 {
-                                    0.0
-                                } else {
-                                    metric.weight(node) as f32 / base as f32
+                    if vis[1] {
+                        row.col(|ui| {
+                            let frac = match tree.parent(id) {
+                                Some(p) => {
+                                    let base = metric.weight(tree.node(p));
+                                    if base == 0 {
+                                        0.0
+                                    } else {
+                                        metric.weight(node) as f32 / base as f32
+                                    }
                                 }
+                                None => 1.0,
+                            };
+                            percent_bar(ui, frac);
+                        });
+                    }
+                    if vis[2] {
+                        row.col(|ui| {
+                            ui.label(format_size(node.size));
+                        });
+                    }
+                    if vis[3] {
+                        row.col(|ui| {
+                            ui.label(format_size(node.allocated));
+                        });
+                    }
+                    if vis[4] {
+                        row.col(|ui| {
+                            if node.is_dir() {
+                                ui.label(format_count(node.files.into()));
                             }
-                            None => 1.0,
-                        };
-                        percent_bar(ui, frac);
-                    });
-                    row.col(|ui| {
-                        ui.label(format_size(node.size));
-                    });
-                    row.col(|ui| {
-                        ui.label(format_size(node.allocated));
-                    });
-                    row.col(|ui| {
-                        if node.is_dir() {
-                            ui.label(format_count(node.files.into()));
-                        }
-                    });
-                    row.col(|ui| {
-                        if node.is_dir() {
-                            ui.label(format_count(node.dirs.into()));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(format_filetime(node.mtime));
-                    });
-                    row.col(|ui| {
-                        let r = compression_ratio(node);
-                        if r > 0.0 {
-                            ui.label(format_percent(r));
-                        }
-                    });
+                        });
+                    }
+                    if vis[5] {
+                        row.col(|ui| {
+                            if node.is_dir() {
+                                ui.label(format_count(node.dirs.into()));
+                            }
+                        });
+                    }
+                    if vis[6] {
+                        row.col(|ui| {
+                            ui.label(format_filetime(node.mtime));
+                        });
+                    }
+                    if vis[7] {
+                        row.col(|ui| {
+                            let r = compression_ratio(node);
+                            if r > 0.0 {
+                                ui.label(format_percent(r));
+                            }
+                        });
+                    }
 
                     let resp = row.response();
                     if resp.clicked() {

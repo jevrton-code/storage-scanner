@@ -1,0 +1,104 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Instalador MSI do Storage Scanner (cargo-wix / WiX Toolset v3).
+  Gerar:  cargo install cargo-wix
+          cargo wix -p storage-scanner --nocapture
+  O executável é instalado por usuário/máquina em "Program Files\Storage Scanner" e ganha
+  atalho no Menu Iniciar. O app roda sem elevação (manifesto asInvoker).
+-->
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Storage Scanner'
+        UpgradeCode='7F3A1C52-9B64-4E0D-8A57-2D1B6C93E4F8'
+        Manufacturer='Storage Scanner'
+        Language='1046'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Analisador de espaço em disco para Windows'
+            Manufacturer='Storage Scanner'
+            InstallerVersion='450'
+            Languages='1046'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='Uma versão mais recente do Storage Scanner já está instalada.' />
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1' />
+        <Property Id='DiskPrompt' Value='Storage Scanner Instalação [1]' />
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Storage Scanner'>
+                    <Component Id='binary0' Guid='*'>
+                        <File
+                            Id='exe0'
+                            Name='storage-scanner.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\storage-scanner.exe'
+                            KeyPath='yes'/>
+                    </Component>
+                    <Component Id='readme' Guid='*'>
+                        <File
+                            Id='readme0'
+                            Name='README.md'
+                            DiskId='1'
+                            Source='..\..\README.md'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='Storage Scanner'>
+                    <Component Id='StartMenuShortcut' Guid='*'>
+                        <Shortcut
+                            Id='AppShortcut'
+                            Name='Storage Scanner'
+                            Description='Analisador de espaço em disco'
+                            Target='[APPLICATIONFOLDER]storage-scanner.exe'
+                            WorkingDirectory='APPLICATIONFOLDER'/>
+                        <RemoveFolder Id='RemoveStartMenuFolder' On='uninstall'/>
+                        <RegistryValue Root='HKCU' Key='Software\StorageScanner'
+                            Name='StartMenuShortcut' Type='integer' Value='1' KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Aplicativo'
+            Description='Instala o Storage Scanner.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='readme'/>
+            <ComponentRef Id='StartMenuShortcut'/>
+        </Feature>
+
+        <!-- A integração com o menu do Explorer é feita pelo próprio app (Configurações), em HKCU. -->
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Icon Id='ProductICO' SourceFile='assets\icon.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO' />
+    </Product>
+
+</Wix>

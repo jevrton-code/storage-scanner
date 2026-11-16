@@ -58,6 +58,22 @@ pub fn format_filetime(ft: i64) -> String {
     )
 }
 
+/// FILETIME → "aaaa-mm-dd hh:mm:ss" (UTC). Vazio se zero/inválido.
+pub fn format_filetime_iso(ft: i64) -> String {
+    if ft <= 0 {
+        return String::new();
+    }
+    let secs = ft / 10_000_000 - FILETIME_UNIX_DIFF_SECS;
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    let rem = secs.rem_euclid(86_400);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
 /// Algoritmo de Howard Hinnant (dias desde 1970-01-01 → data civil).
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;

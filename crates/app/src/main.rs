@@ -5,6 +5,8 @@ rust_i18n::i18n!("locales", fallback = "pt-BR");
 mod actions;
 mod app;
 mod cli;
+mod config;
+mod logging;
 mod state;
 mod ui;
 
@@ -12,6 +14,9 @@ use rust_i18n::t;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    let cli_mode = args.iter().any(|a| a == "--cli");
+    rust_i18n::set_locale("pt-BR");
+    logging::install_panic_hook(!cli_mode);
     if let Some(parsed) = cli::parse(&args) {
         match parsed {
             Ok(a) => std::process::exit(cli::run(a)),
@@ -28,7 +33,7 @@ fn main() -> eframe::Result<()> {
         .find(|a| !a.starts_with("--"))
         .map(std::path::PathBuf::from);
     rust_i18n::set_locale("pt-BR");
-    tracing_subscriber::fmt::init();
+    logging::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(t!("app.title").to_string())
