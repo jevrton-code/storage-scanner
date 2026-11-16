@@ -1,0 +1,12 @@
+[package]
+name = "ss-scan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-channel = "0.5.17"
+crossbeam-deque = "0.8.8"
+rayon = "1.12.0"
+ss-core = { version = "0.1.0", path = "../core" }
+thiserror = "2.0.21"
+tracing = "0.1.44"

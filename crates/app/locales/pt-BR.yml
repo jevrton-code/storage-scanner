@@ -1,0 +1,4 @@
+_version: 2
+app:
+  title: "Storage Scanner"
+  empty: "Selecione uma unidade ou pasta para analisar."

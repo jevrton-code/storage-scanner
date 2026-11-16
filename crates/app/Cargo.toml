@@ -1,0 +1,19 @@
+[package]
+name = "storage-scanner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.37.0"
+egui = "0.37.0"
+egui_extras = "0.37.0"
+rust-i18n = "4.2.4"
+serde = { version = "1.0.229", features = ["derive"] }
+ss-core = { version = "0.1.0", path = "../core" }
+ss-ops = { version = "0.1.0", path = "../ops" }
+ss-scan = { version = "0.1.0", path = "../scan" }
+toml = "1.2.1"
+tracing-subscriber = "0.3.23"
+
+[build-dependencies]
+embed-manifest = "1.5.1"
