@@ -109,6 +109,43 @@ impl Tree {
         out
     }
 
+    /// Desce a partir de `from` por nomes de componentes (sem diferenciar maiúsculas).
+    pub fn find_child_path(&self, from: NodeId, components: &[&str]) -> Option<NodeId> {
+        let mut cur = from;
+        for comp in components {
+            cur = self.children(cur).iter().copied().find(|&c| {
+                self.name(c).eq_ignore_ascii_case(comp)
+                    || self.name(c).to_lowercase() == comp.to_lowercase()
+            })?;
+        }
+        Some(cur)
+    }
+
+    /// Copia a subárvore de `id` para uma nova árvore (o nó `id` vira a raiz, nomeado `root_name`).
+    pub fn extract_subtree(&self, id: NodeId, root_name: &str) -> Tree {
+        let mut b = TreeBuilder::new();
+        let n = self.node(id);
+        let info = |n: &Node| NodeInfo {
+            flags: n.flags,
+            size: n.size,
+            allocated: n.allocated,
+            mtime: n.mtime,
+        };
+        // Arquivos mantêm seus tamanhos; diretórios serão reagregados em `finish`.
+        let root = b.push(NONE, root_name, info(n));
+        let mut stack = vec![(id, root)];
+        while let Some((old, new)) = stack.pop() {
+            for &c in self.children(old) {
+                let cn = self.node(c);
+                let nid = b.push(new, self.name(c), info(cn));
+                if cn.is_dir() {
+                    stack.push((c, nid));
+                }
+            }
+        }
+        b.finish()
+    }
+
     /// Bytes ocupados pelas estruturas internas (para medir memória).
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * std::mem::size_of::<Node>()

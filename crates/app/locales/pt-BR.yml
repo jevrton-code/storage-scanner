@@ -2,3 +2,6 @@ _version: 2
 app:
   title: "Storage Scanner"
   empty: "Selecione uma unidade ou pasta para analisar."
+tree:
+  system_files: "[Arquivos de sistema NTFS]"
+  orphans: "[Órfãos]"
