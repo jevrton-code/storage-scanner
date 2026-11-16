@@ -1,14 +1,9 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Modelo de dados e algoritmos puros (sem I/O) do Storage Scanner.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod format;
+pub mod metrics;
+pub mod sort;
+pub mod tree;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use metrics::Metric;
+pub use tree::{NONE, Node, NodeId, NodeInfo, Tree, TreeBuilder, flags};
