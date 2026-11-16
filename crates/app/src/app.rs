@@ -2,14 +2,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rust_i18n::t;
+use ss_core::Metric;
 use ss_core::format::{format_count, format_size};
-use ss_core::{Metric, Tree};
 use ss_scan::volumes::{self, VolumeInfo};
-use ss_scan::{Backend, Labels, ScanError, elevation};
+use ss_scan::{Labels, ScanError, elevation};
 
 use crate::state::{JobPoll, ScanJob, ScanResult};
 use crate::ui::dialogs::{self, ErrorDialog};
 use crate::ui::tree_view::TreeViewState;
+use crate::ui::treemap_view::TreemapState;
 use crate::ui::{status_bar, theme, toolbar};
 
 pub struct App {
@@ -19,6 +20,7 @@ pub struct App {
     job: Option<ScanJob>,
     result: Option<ScanResult>,
     tree_view: TreeViewState,
+    treemap: TreemapState,
     error: Option<ErrorDialog>,
     elevate_error: Option<String>,
     /// Alvo recebido na linha de comando, analisado no primeiro quadro.
@@ -40,6 +42,7 @@ impl App {
             job: None,
             result: None,
             tree_view: TreeViewState::new(Metric::Size),
+            treemap: TreemapState::new(),
             error: None,
             elevate_error: None,
         }
@@ -66,6 +69,7 @@ impl App {
             JobPoll::Running => {}
             JobPoll::Done(result) => {
                 self.tree_view = TreeViewState::new(self.tree_view.metric);
+                self.treemap = TreemapState::new();
                 self.result = Some(*result);
                 self.job = None;
             }
@@ -197,6 +201,27 @@ impl eframe::App for App {
             status_bar::show(ui, self.result.as_ref(), self.tree_view.selected);
         });
 
+        if self.job.is_none()
+            && let Some(r) = &self.result
+        {
+            egui::Panel::bottom("treemap")
+                .resizable(true)
+                .default_size(320.0)
+                .min_size(120.0)
+                .show(ui, |ui| {
+                    let ev = self.treemap.show(
+                        ui,
+                        &r.tree,
+                        r.generation,
+                        self.tree_view.metric,
+                        self.tree_view.selected,
+                    );
+                    if let Some(id) = ev.select {
+                        self.tree_view.reveal(&r.tree, id);
+                    }
+                });
+        }
+
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
 
         if let Some(err) = &self.error
@@ -204,6 +229,5 @@ impl eframe::App for App {
         {
             self.error = None;
         }
-        let _ = (Backend::Auto, Tree::ROOT);
     }
 }

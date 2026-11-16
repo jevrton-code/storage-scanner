@@ -48,3 +48,6 @@ tree:
     reparse: "Ponto de reanálise (não seguido)"
     compressed: "Compressão NTFS"
     sparse: "Arquivo esparso"
+treemap:
+  tooltip_files: "%{n} arquivos"
+  empty: "Nada para exibir"

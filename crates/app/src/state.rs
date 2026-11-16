@@ -18,7 +18,9 @@ pub struct ScanJob {
 }
 
 pub struct ScanResult {
-    pub tree: Tree,
+    pub tree: Arc<Tree>,
+    /// Incrementa a cada alteração da árvore (invalida o layout do treemap).
+    pub generation: u64,
     pub target: PathBuf,
     pub backend: Backend,
     pub fallback_reason: Option<String>,
@@ -70,7 +72,8 @@ impl ScanJob {
         match self.rx.try_recv() {
             Ok(Ok(report)) => JobPoll::Done(Box::new(ScanResult {
                 errors: self.progress.errors.load(Ordering::Relaxed),
-                tree: report.tree,
+                tree: Arc::new(report.tree),
+                generation: 0,
                 target: self.target.clone(),
                 backend: report.backend,
                 fallback_reason: report.fallback_reason,

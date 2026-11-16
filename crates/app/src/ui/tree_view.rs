@@ -83,7 +83,6 @@ impl TreeViewState {
     }
 
     /// Expande os ancestrais de `id`, seleciona e rola até o nó.
-    #[allow(dead_code)] // usado pelas fases de treemap/métricas
     pub fn reveal(&mut self, tree: &Tree, id: NodeId) {
         let mut cur = tree.parent(id);
         while let Some(p) = cur {
@@ -96,7 +95,6 @@ impl TreeViewState {
         self.scroll_to = self.flat.iter().position(|&(n, _)| n == id);
     }
 
-    #[allow(dead_code)] // usado pelas fases de treemap/métricas
     fn rebuild_if_dirty_now(&mut self, tree: &Tree) {
         if self.dirty {
             self.rebuild(tree);
