@@ -49,7 +49,11 @@ impl Scanner for WalkScanner {
         progress: &Progress,
         cancel: &AtomicBool,
     ) -> Result<Tree, ScanError> {
-        let ScanTarget::Path(path) = target;
+        let ScanTarget::Path(path) = target else {
+            return Err(ScanError::NotADirectory(
+                "o varredor de pastas não lê dispositivos MTP".into(),
+            ));
+        };
         let abs: PathBuf = std::path::absolute(path)?;
         let meta = std::fs::metadata(&abs)?;
         if !meta.is_dir() {

@@ -1,4 +1,4 @@
-//! Modo CLI de diagnóstico: `storage-scanner --cli <caminho> [--top N] [--backend auto|walk|mft] | --volumes`.
+//! Modo CLI de diagnóstico: `storage-scanner --cli <caminho> [--top N] [--backend auto|walk|mft] | --volumes | --devices`.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -15,6 +15,7 @@ pub struct CliArgs {
     pub top: usize,
     pub backend: String,
     pub list_volumes: bool,
+    pub list_devices: bool,
 }
 
 /// Interpreta os argumentos; `None` se não for o modo CLI.
@@ -24,6 +25,7 @@ pub fn parse(args: &[String]) -> Option<Result<CliArgs, String>> {
     let mut top = 20usize;
     let mut backend = "auto".to_string();
     let mut list_volumes = false;
+    let mut list_devices = false;
     let mut it = args.iter().skip(pos + 1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -32,6 +34,7 @@ pub fn parse(args: &[String]) -> Option<Result<CliArgs, String>> {
                 None => return Some(Err("--top requer um número".into())),
             },
             "--volumes" => list_volumes = true,
+            "--devices" => list_devices = true,
             "--backend" => match it.next() {
                 Some(v) => backend = v.clone(),
                 None => return Some(Err("--backend requer um valor".into())),
@@ -48,15 +51,17 @@ pub fn parse(args: &[String]) -> Option<Result<CliArgs, String>> {
             top,
             backend,
             list_volumes,
+            list_devices,
         }),
-        None if list_volumes => Ok(CliArgs {
+        None if list_volumes || list_devices => Ok(CliArgs {
             path: PathBuf::new(),
             top,
             backend,
             list_volumes,
+            list_devices,
         }),
         None => Err(
-            "uso: storage-scanner --cli <caminho> [--top N] [--backend auto|walk|mft] | --volumes"
+            "uso: storage-scanner --cli <caminho> [--top N] [--backend auto|walk|mft] | --volumes | --devices"
                 .into(),
         ),
     })
@@ -72,6 +77,9 @@ fn attach_console() {
 
 pub fn run(args: CliArgs) -> i32 {
     attach_console();
+    if args.list_devices {
+        return print_devices();
+    }
     if args.list_volumes {
         print_volumes();
         return 0;
@@ -84,8 +92,8 @@ pub fn run(args: CliArgs) -> i32 {
         return 2;
     };
     let target = ScanTarget::Path(args.path.clone());
-    let progress = Progress::default();
-    let cancel = AtomicBool::new(false);
+    let progress = std::sync::Arc::new(Progress::default());
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let labels = Labels {
         system_files: t!("tree.system_files").to_string(),
         orphans: t!("tree.orphans").to_string(),
@@ -115,6 +123,7 @@ pub fn run(args: CliArgs) -> i32 {
         && backend == Backend::Auto
         && report.fallback_reason.is_none()
         && !ss_scan::elevation::is_elevated()
+        && is_local_ntfs(&args.path)
     {
         println!(
             "Dica:        execute como administrador para o modo rápido (MFT) em volumes NTFS"
@@ -204,4 +213,28 @@ Elevado: {}",
             "não"
         }
     );
+}
+
+fn print_devices() -> i32 {
+    match ss_scan::mtp::list_devices() {
+        Ok(devs) if devs.is_empty() => println!("Nenhum dispositivo portátil (MTP) conectado."),
+        Ok(devs) => {
+            for d in devs {
+                println!("{}\t{}", d.name, d.id);
+            }
+        }
+        Err(e) => {
+            eprintln!("erro: {e}");
+            return 1;
+        }
+    }
+    0
+}
+
+/// A dica de elevação só faz sentido para volumes NTFS locais.
+fn is_local_ntfs(path: &std::path::Path) -> bool {
+    use ss_scan::volumes::{DriveKind, volume_info, volume_root_of};
+    volume_root_of(path)
+        .map(|r| volume_info(&r))
+        .is_some_and(|v| v.is_ntfs() && v.kind != DriveKind::Remote)
 }

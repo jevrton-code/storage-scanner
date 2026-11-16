@@ -14,6 +14,8 @@ pub struct MenuInfo {
     pub protected: bool,
     pub ntfs: bool,
     pub compressed: bool,
+    /// Item de um dispositivo MTP: só copiar caminho, copiar para o PC e excluir.
+    pub mtp: bool,
 }
 
 pub struct MenuState {
@@ -40,6 +42,29 @@ pub fn show(ctx: &egui::Context, state: &MenuState, info: &MenuInfo) -> (Option<
                         chosen = Some(a);
                     }
                 };
+                if info.mtp {
+                    item(
+                        ui,
+                        true,
+                        t!("menu.copy_path").to_string(),
+                        MenuAction::CopyPath,
+                    );
+                    item(
+                        ui,
+                        true,
+                        t!("menu.mtp_copy_to_pc").to_string(),
+                        MenuAction::CopyTo,
+                    );
+                    ui.separator();
+                    item(
+                        ui,
+                        true,
+                        t!("menu.delete_permanent").to_string(),
+                        MenuAction::DeletePermanent,
+                    );
+                    ui.weak(t!("menu.mtp_limited").to_string());
+                    return;
+                }
                 let ok = info.exists;
                 let destructive = ok && !info.protected;
                 item(ui, ok, t!("menu.open").to_string(), MenuAction::Open);
@@ -104,6 +129,8 @@ pub fn show(ctx: &egui::Context, state: &MenuState, info: &MenuInfo) -> (Option<
 pub struct ConfirmDelete {
     pub paths: Vec<std::path::PathBuf>,
     pub size: u64,
+    /// Exclusão em dispositivo MTP: nó da árvore (o caminho é virtual).
+    pub mtp_node: Option<u32>,
 }
 
 /// Confirmação da exclusão permanente. `Some(true)` = confirmou, `Some(false)` = cancelou.

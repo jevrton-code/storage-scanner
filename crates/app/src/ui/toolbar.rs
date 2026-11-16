@@ -2,9 +2,10 @@
 
 use rust_i18n::t;
 use ss_core::Metric;
+use ss_scan::mtp::MtpDevice;
 use ss_scan::volumes::VolumeInfo;
 
-use super::drive_picker;
+use super::drive_picker::{self, Pick};
 
 #[derive(Default)]
 pub struct ToolbarOutput {
@@ -12,6 +13,8 @@ pub struct ToolbarOutput {
     pub stop: bool,
     pub refresh_drives: bool,
     pub open_settings: bool,
+    /// Dispositivo MTP escolhido no seletor.
+    pub picked_device: Option<MtpDevice>,
 }
 
 pub fn metric_label(m: Metric) -> String {
@@ -29,6 +32,7 @@ pub fn show(
     ui: &mut egui::Ui,
     path: &mut String,
     volumes: &[VolumeInfo],
+    devices: &[MtpDevice],
     scanning: bool,
     metric: &mut Metric,
 ) -> ToolbarOutput {
@@ -46,9 +50,17 @@ pub fn show(
             });
         ui.separator();
         ui.add_enabled_ui(!scanning, |ui| {
-            if let Some(root) = drive_picker::show(ui, volumes, path) {
-                *path = root;
-                out.analyze = true;
+            match drive_picker::show(ui, volumes, devices, path) {
+                Some(Pick::Volume(root)) => {
+                    *path = root;
+                    out.analyze = true;
+                }
+                Some(Pick::Device(dev)) => {
+                    *path = drive_picker::device_label(&dev);
+                    out.picked_device = Some(dev);
+                    out.analyze = true;
+                }
+                None => {}
             }
             if ui
                 .small_button("⟳")

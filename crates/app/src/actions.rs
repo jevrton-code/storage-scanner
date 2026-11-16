@@ -165,6 +165,58 @@ impl ActionJob {
         )
     }
 
+    /// Exclui um objeto de um dispositivo MTP; em caso de sucesso remove o nó da árvore.
+    pub fn mtp_delete(
+        ctx: &egui::Context,
+        label: String,
+        device: ss_scan::mtp::MtpDevice,
+        object_id: String,
+        tree_path: PathBuf,
+    ) -> Self {
+        Self::spawn(
+            ctx,
+            label,
+            JobProgress::Native,
+            Arc::new(AtomicBool::new(false)),
+            move |_| {
+                let res = ss_scan::mtp::transfer::delete_object(&device, &object_id);
+                Outcome {
+                    sources: if res.is_ok() { vec![tree_path] } else { vec![] },
+                    error: res.err().map(|e| e.to_string()),
+                    cancelled: false,
+                    grafts: vec![],
+                    info: None,
+                }
+            },
+        )
+    }
+
+    /// Copia um objeto de um dispositivo MTP para uma pasta do PC.
+    pub fn mtp_copy_to_pc(
+        ctx: &egui::Context,
+        label: String,
+        device: ss_scan::mtp::MtpDevice,
+        object_id: String,
+        dest_dir: PathBuf,
+    ) -> Self {
+        Self::spawn(
+            ctx,
+            label,
+            JobProgress::Native,
+            Arc::new(AtomicBool::new(false)),
+            move |_| {
+                let res = ss_scan::mtp::transfer::copy_object_to_pc(&device, &object_id, &dest_dir);
+                Outcome {
+                    error: res.err().map(|e| e.to_string()),
+                    cancelled: false,
+                    sources: vec![],
+                    grafts: vec![],
+                    info: None,
+                }
+            },
+        )
+    }
+
     /// Liga/desliga a compressão NTFS recursivamente e relê o item.
     pub fn ntfs_compress(ctx: &egui::Context, label: String, path: PathBuf, enable: bool) -> Self {
         let progress = Arc::new(CompressProgress::default());
@@ -286,6 +338,7 @@ mod tests {
             tree: Arc::new(tree),
             generation: 0,
             target: root.to_path_buf(),
+            mtp: None,
             backend: Backend::Walk,
             fallback_reason: None,
             elapsed: Duration::ZERO,

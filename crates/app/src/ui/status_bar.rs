@@ -26,6 +26,7 @@ pub fn show(
                 let root = r.tree.node(Tree::ROOT);
                 let backend = match r.backend {
                     Backend::Mft => t!("backend.mft"),
+                    Backend::Mtp => t!("backend.mtp"),
                     _ => t!("backend.walk"),
                 };
                 ui.label(

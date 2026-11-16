@@ -12,6 +12,7 @@ toolbar:
   analyze: "Analisar"
   stop: "Parar"
 drive:
+  device: "📱 %{name} (MTP)"
   label: "%{root}  %{fs}  %{total} (%{free} livres)"
   label_named: "%{root}  %{name}  %{fs}  %{total} (%{free} livres)"
 banner:
@@ -25,6 +26,7 @@ scan:
   cancelled: "Análise cancelada."
   error: "Erro na análise: %{error}"
 backend:
+  mtp: "MTP"
   mft: "MFT"
   walk: "Varredura"
 status:
@@ -70,6 +72,8 @@ ext_panel:
   clear: "Limpar destaque"
   hint: "Clique em um tipo para destacá-lo no treemap."
 menu:
+  mtp_copy_to_pc: "Copiar para o PC…"
+  mtp_limited: "Dispositivo MTP: ações limitadas (copiar e excluir)."
   open: "Abrir"
   reveal: "Mostrar no Explorador"
   copy_path: "Copiar caminho"

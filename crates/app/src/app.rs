@@ -7,6 +7,7 @@ use ss_core::Metric;
 use ss_core::format::{format_count, format_size};
 use ss_ops::file_op::Op;
 use ss_ops::{context_menu as native_menu, explorer_integration, open as shell_open, protect};
+use ss_scan::mtp::{self, MtpDevice};
 use ss_scan::volumes::{self, VolumeInfo};
 use ss_scan::{Labels, ScanError, elevation};
 
@@ -42,6 +43,10 @@ pub struct App {
     settings_open: bool,
     explorer_registered: bool,
     notice: Option<String>,
+    // --- dispositivos MTP ---
+    mtp_devices: Vec<MtpDevice>,
+    device_rx: Option<crossbeam_channel::Receiver<Vec<MtpDevice>>>,
+    selected_device: Option<MtpDevice>,
 }
 
 impl App {
@@ -72,7 +77,30 @@ impl App {
             settings_open: false,
             explorer_registered: explorer_integration::is_registered(),
             notice: None,
+            mtp_devices: Vec::new(),
+            device_rx: None,
+            selected_device: None,
         }
+        .with_device_scan(&cc.egui_ctx)
+    }
+
+    /// Lista os dispositivos MTP em segundo plano (a enumeração pode demorar).
+    fn with_device_scan(mut self, ctx: &egui::Context) -> Self {
+        self.refresh_devices(ctx);
+        self
+    }
+
+    fn refresh_devices(&mut self, ctx: &egui::Context) {
+        if self.device_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(mtp::list_devices().unwrap_or_default());
+            ctx.request_repaint();
+        });
+        self.device_rx = Some(rx);
     }
 
     fn labels() -> Labels {
@@ -87,11 +115,25 @@ impl App {
         if self.job.is_some() || target.as_os_str().is_empty() {
             return;
         }
-        self.job = Some(ScanJob::start(ctx, target, Self::labels()));
+        // Um dispositivo MTP só vale enquanto o campo ainda mostra o seu nome.
+        let device = self
+            .selected_device
+            .clone()
+            .filter(|d| crate::ui::drive_picker::device_label(d) == self.path);
+        self.job = Some(ScanJob::start(ctx, target, device, Self::labels()));
     }
 
     fn show_error(&mut self, message: String) {
         self.error = Some(ErrorDialog { message });
+    }
+
+    fn poll_devices(&mut self) {
+        if let Some(rx) = &self.device_rx
+            && let Ok(list) = rx.try_recv()
+        {
+            self.mtp_devices = list;
+            self.device_rx = None;
+        }
     }
 
     fn poll_job(&mut self) {
@@ -151,7 +193,10 @@ impl App {
 
     /// O alvo atual está num volume NTFS local que poderia usar o modo rápido?
     fn wants_elevation(&self) -> bool {
-        if self.elevated {
+        if self.elevated
+            || self.job.as_ref().is_some_and(|j| j.device.is_some())
+            || self.result.as_ref().is_some_and(|r| r.mtp.is_some())
+        {
             return false;
         }
         let target = self
@@ -198,13 +243,7 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() / 3.0);
                 ui.spinner();
-                ui.heading(
-                    t!(
-                        "scan.scanning_title",
-                        path = job.target.display().to_string()
-                    )
-                    .to_string(),
-                );
+                ui.heading(t!("scan.scanning_title", path = job.title()).to_string());
                 ui.label(
                     t!(
                         "scan.progress",
@@ -253,16 +292,19 @@ impl App {
         let r = self.result.as_ref()?;
         let path = self.node_path(node)?;
         let n = r.tree.node(node);
-        let exists = path.exists();
-        let ntfs = volumes::volume_root_of(&path)
-            .map(|root| volumes::volume_info(&root).is_ntfs())
-            .unwrap_or(false);
+        let mtp = r.mtp.is_some();
+        let exists = !mtp && path.exists();
+        let ntfs = !mtp
+            && volumes::volume_root_of(&path)
+                .map(|root| volumes::volume_info(&root).is_ntfs())
+                .unwrap_or(false);
         Some(MenuInfo {
             path: path.display().to_string(),
             exists,
-            protected: protect::is_protected(&path),
+            protected: !mtp && protect::is_protected(&path),
             ntfs,
             compressed: n.has(ss_core::flags::COMPRESSED),
+            mtp,
         })
     }
 
@@ -274,6 +316,38 @@ impl App {
             || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
+        if let Some(mtp) = self.result.as_ref().and_then(|r| r.mtp.as_ref()) {
+            let object_id = mtp
+                .object_ids
+                .get(node as usize)
+                .cloned()
+                .unwrap_or_default();
+            let device = mtp.device.clone();
+            match action {
+                MenuAction::CopyPath => ctx.copy_text(path.display().to_string()),
+                MenuAction::DeletePermanent => {
+                    let size = self.result.as_ref().map_or(0, |r| r.tree.node(node).size);
+                    self.confirm_delete = Some(ConfirmDelete {
+                        paths: vec![path],
+                        size,
+                        mtp_node: Some(node),
+                    });
+                }
+                MenuAction::CopyTo => {
+                    if let Some(dest) = rfd::FileDialog::new().pick_folder() {
+                        self.start_action(ActionJob::mtp_copy_to_pc(
+                            ctx,
+                            t!("job.copy", name = name).to_string(),
+                            device,
+                            object_id,
+                            dest,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         match action {
             MenuAction::Open => {
                 if let Err(e) = shell_open::open(&path, self.elevated) {
@@ -300,6 +374,7 @@ impl App {
                 self.confirm_delete = Some(ConfirmDelete {
                     paths: vec![path],
                     size,
+                    mtp_node: None,
                 });
             }
             MenuAction::MoveTo | MenuAction::CopyTo => {
@@ -394,6 +469,7 @@ impl eframe::App for App {
         {
             self.hwnd = Some(w.hwnd.get());
         }
+        self.poll_devices();
         self.poll_job();
         self.poll_action();
         if self.pending_start {
@@ -407,6 +483,7 @@ impl eframe::App for App {
                 ui,
                 &mut self.path,
                 &self.volumes,
+                &self.mtp_devices,
                 self.job.is_some(),
                 &mut self.metric,
             );
@@ -414,8 +491,12 @@ impl eframe::App for App {
         if self.metric != self.tree_view.metric {
             self.tree_view.set_metric(self.metric);
         }
+        if let Some(d) = tb.picked_device.take() {
+            self.selected_device = Some(d);
+        }
         if tb.refresh_drives {
             self.volumes = volumes::list_volumes();
+            self.refresh_devices(&ctx);
         }
         if tb.open_settings {
             self.settings_open = true;
@@ -496,15 +577,27 @@ impl eframe::App for App {
             match context_menu::confirm_delete(&ctx, c) {
                 Some(true) => {
                     let paths = c.paths.clone();
+                    let mtp_node = c.mtp_node;
                     self.confirm_delete = None;
                     let label = t!("job.delete_permanent").to_string();
-                    self.start_action(ActionJob::file_op(
-                        &ctx,
-                        label,
-                        Op::Delete { permanent: true },
-                        paths,
-                        self.hwnd,
-                    ));
+                    let mtp = self.result.as_ref().and_then(|r| r.mtp.as_ref());
+                    if let (Some(node), Some(m)) = (mtp_node, mtp) {
+                        let object_id =
+                            m.object_ids.get(node as usize).cloned().unwrap_or_default();
+                        let device = m.device.clone();
+                        let tree_path = paths.first().cloned().unwrap_or_default();
+                        self.start_action(ActionJob::mtp_delete(
+                            &ctx, label, device, object_id, tree_path,
+                        ));
+                    } else {
+                        self.start_action(ActionJob::file_op(
+                            &ctx,
+                            label,
+                            Op::Delete { permanent: true },
+                            paths,
+                            self.hwnd,
+                        ));
+                    }
                 }
                 Some(false) => self.confirm_delete = None,
                 None => {}

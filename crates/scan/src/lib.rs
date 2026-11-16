@@ -2,10 +2,12 @@
 
 pub mod elevation;
 pub mod mft;
+pub mod mtp;
 pub mod volumes;
 pub mod walk;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ss_core::Tree;
@@ -27,12 +29,16 @@ pub enum ScanError {
     NotNtfs,
     #[error("MFT: {0}")]
     Mft(String),
+    #[error("dispositivo portátil: {0}")]
+    Mtp(String),
 }
 
 #[derive(Clone, Debug)]
 pub enum ScanTarget {
     /// Volume, pasta local ou caminho UNC.
     Path(PathBuf),
+    /// Celular/câmera via MTP (WPD).
+    Mtp(mtp::MtpDevice),
 }
 
 /// Contadores atômicos lidos pela UI a cada frame.
@@ -75,6 +81,7 @@ pub enum Backend {
     Auto,
     Mft,
     Walk,
+    Mtp,
 }
 
 impl Backend {
@@ -94,6 +101,8 @@ pub struct ScanReport {
     pub backend: Backend,
     /// Motivo de uma queda do MFT para o Walker, se houve.
     pub fallback_reason: Option<String>,
+    /// Dispositivos MTP: id do objeto de cada nó (mesma numeração da árvore).
+    pub object_ids: Option<Vec<String>>,
 }
 
 /// Ponto de entrada: escolhe o backend conforme o alvo e a elevação.
@@ -101,10 +110,21 @@ pub fn scan(
     target: &ScanTarget,
     backend: Backend,
     labels: &Labels,
-    progress: &Progress,
-    cancel: &AtomicBool,
+    progress: &Arc<Progress>,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<ScanReport, ScanError> {
-    let ScanTarget::Path(path) = target;
+    let path = match target {
+        ScanTarget::Path(p) => p,
+        ScanTarget::Mtp(dev) => {
+            let s = mtp::scan_device(dev, progress, cancel)?;
+            return Ok(ScanReport {
+                tree: s.tree,
+                backend: Backend::Mtp,
+                fallback_reason: None,
+                object_ids: Some(s.object_ids),
+            });
+        }
+    };
     let abs = std::path::absolute(path)?;
     let vol = volumes::volume_root_of(&abs).map(|r| volumes::volume_info(&r));
 
@@ -137,6 +157,7 @@ pub fn scan(
                     tree,
                     backend: Backend::Mft,
                     fallback_reason: None,
+                    object_ids: None,
                 });
             }
             Err(ScanError::Cancelled) => return Err(ScanError::Cancelled),
@@ -148,6 +169,7 @@ pub fn scan(
                     tree,
                     backend: Backend::Walk,
                     fallback_reason: Some(e.to_string()),
+                    object_ids: None,
                 });
             }
         },
@@ -161,6 +183,7 @@ pub fn scan(
         tree,
         backend: Backend::Walk,
         fallback_reason: None,
+        object_ids: None,
     })
 }
 
