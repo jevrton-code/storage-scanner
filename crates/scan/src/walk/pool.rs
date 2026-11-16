@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use crossbeam_deque::{Injector, Stealer, Worker};
 use ss_core::{NodeId, NodeInfo};
+use windows::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+};
 
 use super::dir_enum::{Entry, read_dir};
 use crate::Progress;
@@ -90,6 +93,10 @@ fn find_task(local: &Worker<Task>, shared: &Shared) -> Option<Task> {
 }
 
 fn worker_loop(shared: &Shared, local: Worker<Task>) -> WorkerOutput {
+    // Prioridade baixa: a interface continua fluida enquanto a varredura usa todos os núcleos.
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
     let mut out = WorkerOutput::default();
     let mut entries: Vec<Entry> = Vec::new();
     let mut buf: Vec<u64> = Vec::new();

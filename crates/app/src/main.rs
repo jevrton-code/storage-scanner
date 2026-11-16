@@ -4,6 +4,8 @@ rust_i18n::i18n!("locales", fallback = "pt-BR");
 
 mod app;
 mod cli;
+mod state;
+mod ui;
 
 use rust_i18n::t;
 
@@ -18,6 +20,12 @@ fn main() -> eframe::Result<()> {
             }
         }
     }
+    // Um argumento posicional (ex.: do menu do Explorer) é o alvo inicial.
+    let initial_target = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
+        .map(std::path::PathBuf::from);
     rust_i18n::set_locale("pt-BR");
     tracing_subscriber::fmt::init();
     let options = eframe::NativeOptions {
@@ -29,6 +37,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         &t!("app.title"),
         options,
-        Box::new(|_cc| Ok(Box::new(app::App))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, initial_target)))),
     )
 }

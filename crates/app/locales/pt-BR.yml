@@ -1,7 +1,50 @@
-_version: 2
 app:
   title: "Storage Scanner"
-  empty: "Selecione uma unidade ou pasta para analisar."
+  empty: "Selecione uma unidade ou pasta e clique em Analisar."
+toolbar:
+  drive: "Unidade"
+  drive_placeholder: "Escolher unidade…"
+  refresh_drives: "Atualizar lista de unidades"
+  path_hint: "Caminho (ex.: C:\\Users)"
+  browse: "Pasta…"
+  analyze: "Analisar"
+  stop: "Parar"
+drive:
+  label: "%{root}  %{fs}  %{total} (%{free} livres)"
+  label_named: "%{root}  %{name}  %{fs}  %{total} (%{free} livres)"
+banner:
+  elevation: "O modo rápido (MFT) requer administrador. Esta análise usa a varredura comum, mais lenta."
+  elevate_button: "Reiniciar como administrador"
+  elevate_failed: "Não foi possível reiniciar como administrador: %{error}"
+  fallback: "A leitura direta da MFT falhou e a varredura comum foi usada (%{reason})."
+scan:
+  progress: "Analisando…  %{files} arquivos · %{dirs} pastas · %{size} · %{secs} s"
+  scanning_title: "Analisando %{path}"
+  cancelled: "Análise cancelada."
+  error: "Erro na análise: %{error}"
+backend:
+  mft: "MFT"
+  walk: "Varredura"
+status:
+  done: "%{backend} · %{files} arquivos · %{dirs} pastas · %{size} (alocado %{allocated}) em %{secs} s"
+  denied: "%{n} pastas sem acesso"
+  idle: "Pronto."
+  selected: "%{path}  —  %{size}"
 tree:
   system_files: "[Arquivos de sistema NTFS]"
   orphans: "[Órfãos]"
+  column:
+    name: "Nome"
+    percent: "% do pai"
+    size: "Tamanho"
+    allocated: "Alocado"
+    files: "Arquivos"
+    dirs: "Pastas"
+    modified: "Modificado"
+    compression: "Compressão"
+  flag:
+    access_denied: "Sem acesso a esta pasta"
+    hardlink: "Hard link (tamanho contado no outro nome)"
+    reparse: "Ponto de reanálise (não seguido)"
+    compressed: "Compressão NTFS"
+    sparse: "Arquivo esparso"

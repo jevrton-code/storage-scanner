@@ -17,6 +17,66 @@ pub fn sorted_children(tree: &Tree, id: NodeId, metric: Metric) -> Vec<NodeId> {
     v
 }
 
+/// Coluna de ordenação da árvore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SortKey {
+    Name,
+    #[default]
+    Size,
+    Allocated,
+    Files,
+    Dirs,
+    Modified,
+    Compression,
+}
+
+impl SortKey {
+    /// Ordenação padrão de uma métrica.
+    pub fn from_metric(m: Metric) -> Self {
+        match m {
+            Metric::Size => SortKey::Size,
+            Metric::Allocated => SortKey::Allocated,
+            Metric::FileCount => SortKey::Files,
+            Metric::Modified => SortKey::Modified,
+            Metric::Compression => SortKey::Compression,
+        }
+    }
+
+    fn value(self, tree: &Tree, id: NodeId) -> u64 {
+        let n = tree.node(id);
+        match self {
+            SortKey::Name => 0,
+            SortKey::Size => Metric::Size.key(n),
+            SortKey::Allocated => Metric::Allocated.key(n),
+            SortKey::Files => Metric::FileCount.key(n),
+            SortKey::Dirs => u64::from(n.dirs),
+            SortKey::Modified => Metric::Modified.key(n),
+            SortKey::Compression => Metric::Compression.key(n),
+        }
+    }
+}
+
+/// Filhos de `id` ordenados por `key`. Empates (e a coluna Nome) usam o nome sem diferenciar
+/// maiúsculas, sempre em ordem crescente.
+pub fn sort_children_by(tree: &Tree, id: NodeId, key: SortKey, descending: bool) -> Vec<NodeId> {
+    let mut v: Vec<NodeId> = tree.children(id).to_vec();
+    if key == SortKey::Name {
+        v.sort_by_cached_key(|&c| tree.name(c).to_lowercase());
+        if descending {
+            v.reverse();
+        }
+    } else {
+        v.sort_by_cached_key(|&c| {
+            let val = key.value(tree, c);
+            (
+                if descending { u64::MAX - val } else { val },
+                tree.name(c).to_lowercase(),
+            )
+        });
+    }
+    v
+}
+
 /// Os `n` maiores nós de toda a árvore pela métrica.
 pub fn top_nodes(tree: &Tree, metric: Metric, n: usize, only_files: bool) -> Vec<NodeId> {
     let mut v: Vec<NodeId> = (0..tree.len() as NodeId)
@@ -71,6 +131,21 @@ mod tests {
             .map(|&i| t.name(i).to_string())
             .collect();
         assert_eq!(names, ["d", "A", "b", "c"]);
+    }
+
+    #[test]
+    fn sort_by_key_asc_desc_and_name() {
+        let t = tree();
+        let names = |k, d| -> Vec<String> {
+            sort_children_by(&t, 0, k, d)
+                .iter()
+                .map(|&i| t.name(i).to_string())
+                .collect()
+        };
+        assert_eq!(names(SortKey::Size, true), ["d", "A", "b", "c"]);
+        assert_eq!(names(SortKey::Size, false), ["b", "c", "A", "d"]);
+        assert_eq!(names(SortKey::Name, false), ["A", "b", "c", "d"]);
+        assert_eq!(names(SortKey::Name, true), ["d", "c", "b", "A"]);
     }
 
     #[test]
