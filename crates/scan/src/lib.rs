@@ -193,3 +193,46 @@ fn scan_mft(
     }
     Ok(tree.extract_subtree(id, target_s.trim_end_matches('\\')))
 }
+
+/// Varre um único item (arquivo ou pasta) e devolve uma árvore cuja raiz é o próprio item,
+/// nomeado pelo último componente do caminho. Usado para atualizar a árvore após ações.
+pub fn scan_single(path: &Path, cancel: &AtomicBool) -> Result<Tree, ScanError> {
+    use ss_core::{NONE, NodeInfo, TreeBuilder};
+
+    let meta = std::fs::symlink_metadata(path)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        let tree = walk::WalkScanner::local().scan(
+            &ScanTarget::Path(path.to_path_buf()),
+            &Progress::default(),
+            cancel,
+        )?;
+        // A raiz do walker leva o caminho completo; aqui só o nome.
+        return Ok(tree.extract_subtree(Tree::ROOT, &name));
+    }
+    // Arquivo: pega tamanho alocado e atributos listando a pasta pai.
+    let parent = path
+        .parent()
+        .ok_or_else(|| ScanError::NotADirectory(name.clone()))?;
+    let mut entries = Vec::new();
+    walk::dir_enum::read_dir(parent, &mut entries, &mut Vec::new())?;
+    let e = entries
+        .into_iter()
+        .find(|e| e.name.eq_ignore_ascii_case(&name))
+        .ok_or_else(|| ScanError::Io(std::io::ErrorKind::NotFound.into()))?;
+    let mut b = TreeBuilder::new();
+    b.push(
+        NONE,
+        &e.name,
+        NodeInfo {
+            flags: e.flags,
+            size: e.size,
+            allocated: e.allocated,
+            mtime: e.mtime,
+        },
+    );
+    Ok(b.finish())
+}

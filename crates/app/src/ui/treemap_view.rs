@@ -48,6 +48,8 @@ pub struct TreemapState {
 #[derive(Default)]
 pub struct TreemapEvents {
     pub select: Option<NodeId>,
+    /// Clique direito sobre um bloco (menu de contexto).
+    pub context: Option<NodeId>,
 }
 
 impl Default for TreemapState {
@@ -184,6 +186,9 @@ impl TreemapState {
                 events.select = Some(r.node);
             } else if resp.clicked() {
                 events.select = Some(r.node);
+            } else if resp.secondary_clicked() {
+                events.select = Some(r.node);
+                events.context = Some(r.node);
             }
         }
         events

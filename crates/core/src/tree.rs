@@ -14,6 +14,8 @@ pub mod flags {
     pub const HIDDEN: u16 = 1 << 5;
     pub const SYSTEM: u16 = 1 << 6;
     pub const ACCESS_ERROR: u16 = 1 << 7;
+    /// Removido por uma ação do usuário (ver `Tree::remove_subtree`).
+    pub const REMOVED: u16 = 1 << 8;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -54,7 +56,7 @@ pub struct NodeInfo {
     pub mtime: i64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Tree {
     nodes: Vec<Node>,
     names: Vec<u8>,
@@ -121,6 +123,25 @@ impl Tree {
         Some(cur)
     }
 
+    /// Nó correspondente a um caminho completo (sem diferenciar maiúsculas), a partir do nome da
+    /// raiz (ex.: `C:\` ou `C:\Users\Ana`). `None` se estiver fora da árvore.
+    pub fn find_by_path(&self, path: &str) -> Option<NodeId> {
+        let root = self.name(Self::ROOT).trim_end_matches('\\');
+        let p = path.trim_end_matches('\\');
+        if !p.get(..root.len())?.eq_ignore_ascii_case(root) {
+            return None;
+        }
+        let rest = &p[root.len()..];
+        if rest.is_empty() {
+            return Some(Self::ROOT);
+        }
+        if !rest.starts_with('\\') {
+            return None;
+        }
+        let comps: Vec<&str> = rest.split('\\').filter(|c| !c.is_empty()).collect();
+        self.find_child_path(Self::ROOT, &comps)
+    }
+
     /// Copia a subárvore de `id` para uma nova árvore (o nó `id` vira a raiz, nomeado `root_name`).
     pub fn extract_subtree(&self, id: NodeId, root_name: &str) -> Tree {
         let mut b = TreeBuilder::new();
@@ -144,6 +165,125 @@ impl Tree {
             }
         }
         b.finish()
+    }
+
+    /// Nó removido por [`Tree::remove_subtree`] (some das listagens e estatísticas).
+    pub fn is_removed(&self, id: NodeId) -> bool {
+        self.nodes[id as usize].flags & flags::REMOVED != 0
+    }
+
+    /// Soma `(dsize, dalloc, dfiles, ddirs)` (com sinal) em todos os ancestrais de `from`, inclusive.
+    fn adjust_ancestors(&mut self, from: Option<NodeId>, d: (i128, i128, i64, i64)) {
+        let mut cur = from;
+        while let Some(id) = cur {
+            let n = &mut self.nodes[id as usize];
+            n.size = (i128::from(n.size) + d.0).max(0) as u64;
+            n.allocated = (i128::from(n.allocated) + d.1).max(0) as u64;
+            n.files = (i64::from(n.files) + d.2).max(0) as u32;
+            n.dirs = (i64::from(n.dirs) + d.3).max(0) as u32;
+            cur = (n.parent != NONE).then_some(n.parent);
+        }
+    }
+
+    /// Remove `id` (e tudo abaixo dele) da árvore, corrigindo os agregados dos ancestrais.
+    /// Os ids dos demais nós permanecem válidos. A raiz não pode ser removida.
+    pub fn remove_subtree(&mut self, id: NodeId) -> bool {
+        let Some(parent) = self.parent(id) else {
+            return false;
+        };
+        if self.is_removed(id) {
+            return false;
+        }
+        let n = self.nodes[id as usize];
+        // Tira da lista de filhos do pai (troca com o último e encurta).
+        let p = self.nodes[parent as usize];
+        let range = p.child_start as usize..(p.child_start + p.child_count) as usize;
+        if let Some(pos) = self.children[range.clone()].iter().position(|&c| c == id) {
+            let last = range.end - 1;
+            self.children.swap(range.start + pos, last);
+            self.nodes[parent as usize].child_count -= 1;
+        }
+        // Marca a subárvore como removida.
+        let mut stack = vec![id];
+        while let Some(x) = stack.pop() {
+            self.nodes[x as usize].flags |= flags::REMOVED;
+            let (s, c) = (
+                self.nodes[x as usize].child_start,
+                self.nodes[x as usize].child_count,
+            );
+            stack.extend_from_slice(&self.children[s as usize..(s + c) as usize]);
+        }
+        let ndirs = i64::from(n.dirs) + i64::from(n.is_dir());
+        self.adjust_ancestors(
+            Some(parent),
+            (
+                -i128::from(n.size),
+                -i128::from(n.allocated),
+                -i64::from(n.files),
+                -ndirs,
+            ),
+        );
+        true
+    }
+
+    /// Enxerta a árvore `sub` (a raiz dela vira filha de `parent`) e soma seus totais aos
+    /// ancestrais. Devolve o id da nova raiz. `parent` deve ser um diretório.
+    pub fn graft(&mut self, parent: NodeId, sub: &Tree) -> Option<NodeId> {
+        if sub.is_empty() || !self.node(parent).is_dir() {
+            return None;
+        }
+        let base = self.nodes.len() as u32;
+        let names_base = self.names.len() as u32;
+        let children_base = self.children.len() as u32;
+        self.names.extend_from_slice(&sub.names);
+        self.children.extend(sub.children.iter().map(|&c| c + base));
+        self.nodes.extend(sub.nodes.iter().map(|n| Node {
+            parent: if n.parent == NONE {
+                parent
+            } else {
+                n.parent + base
+            },
+            name_off: n.name_off + names_base,
+            child_start: n.child_start + children_base,
+            ..*n
+        }));
+        let new_root = base;
+        self.attach_child(parent, new_root);
+        let r = sub.nodes[0];
+        let ndirs = i64::from(r.dirs) + i64::from(r.is_dir());
+        self.adjust_ancestors(
+            Some(parent),
+            (
+                i128::from(r.size),
+                i128::from(r.allocated),
+                i64::from(r.files),
+                ndirs,
+            ),
+        );
+        let mtime = r.mtime;
+        let mut cur = Some(parent);
+        while let Some(x) = cur {
+            let n = &mut self.nodes[x as usize];
+            n.mtime = n.mtime.max(mtime);
+            cur = (n.parent != NONE).then_some(n.parent);
+        }
+        Some(new_root)
+    }
+
+    /// Acrescenta `child` à lista de filhos de `parent` (realoca a lista no fim se preciso).
+    fn attach_child(&mut self, parent: NodeId, child: NodeId) {
+        let p = self.nodes[parent as usize];
+        let end = (p.child_start + p.child_count) as usize;
+        if end == self.children.len() {
+            self.children.push(child);
+        } else {
+            let new_start = self.children.len() as u32;
+            let old: Vec<NodeId> = self.children[p.child_start as usize..end].to_vec();
+            self.children.extend(old);
+            self.children.push(child);
+            self.nodes[parent as usize].child_start = new_start;
+        }
+        self.nodes[parent as usize].child_count += 1;
     }
 
     /// Bytes ocupados pelas estruturas internas (para medir memória).
@@ -359,6 +499,17 @@ mod tests {
     }
 
     #[test]
+    fn find_by_path_is_case_insensitive_and_bounded() {
+        let t = sample();
+        assert_eq!(t.find_by_path(r"c:\A\C\z.dat"), Some(5));
+        assert_eq!(t.find_by_path(r"C:\"), Some(Tree::ROOT));
+        assert_eq!(t.find_by_path(r"C:\a\"), Some(1));
+        assert_eq!(t.find_by_path(r"D:\a"), None);
+        assert_eq!(t.find_by_path(r"C:\nada"), None);
+        assert_eq!(t.find_by_path("C:"), Some(Tree::ROOT));
+    }
+
+    #[test]
     fn out_of_order_put() {
         let mut b = TreeBuilder::new();
         b.resize(3);
@@ -368,5 +519,49 @@ mod tests {
         let t = b.finish();
         assert_eq!(t.node(0).size, 7);
         assert_eq!(t.path(2), "R\\d\\f");
+    }
+
+    #[test]
+    fn remove_subtree_fixes_ancestors() {
+        let mut t = sample();
+        // remove "c" (id 2): z.dat (10) + w.dat (20)
+        assert!(t.remove_subtree(2));
+        assert!(t.is_removed(2) && t.is_removed(5) && t.is_removed(6));
+        let r = t.node(Tree::ROOT);
+        assert_eq!((r.size, r.files, r.dirs), (1100, 2, 1));
+        assert_eq!(t.node(1).size, 1000);
+        assert_eq!(t.children(1).len(), 1); // só y.bin
+        assert!(!t.remove_subtree(2), "remoção dupla");
+        assert!(!t.remove_subtree(Tree::ROOT));
+    }
+
+    #[test]
+    fn graft_adds_totals_and_keeps_old_ids() {
+        let mut t = sample();
+        let mut b = TreeBuilder::new();
+        let r = b.push(NONE, "novo", dir());
+        b.push(r, "n1.bin", file(500, 4096, 99));
+        let sub_dir = b.push(r, "q", dir());
+        b.push(sub_dir, "n2.bin", file(5, 4096, 3));
+        let sub = b.finish();
+        let id = t.graft(2, &sub).unwrap(); // dentro de "c"
+        assert_eq!(t.name(id), "novo");
+        assert_eq!(t.path(id), "C:\\a\\c\\novo");
+        assert_eq!(t.parent(id), Some(2));
+        assert_eq!(t.children(2).len(), 3);
+        let r = t.node(Tree::ROOT);
+        assert_eq!((r.size, r.files, r.dirs, r.mtime), (1635, 6, 4, 99));
+        assert_eq!(t.node(2).size, 535);
+        assert_eq!(
+            t.path(5),
+            "C:\\a\\c\\z.dat",
+            "ids antigos continuam válidos"
+        );
+        // Enxerto na raiz (lista de filhos não está no fim do vetor).
+        let mut b2 = TreeBuilder::new();
+        b2.push(NONE, "solto.txt", file(1, 1, 0));
+        t.graft(Tree::ROOT, &b2.finish()).unwrap();
+        assert_eq!(t.children(Tree::ROOT).len(), 3);
+        assert_eq!(t.node(Tree::ROOT).files, 7);
     }
 }

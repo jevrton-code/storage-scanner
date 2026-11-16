@@ -1,3 +1,4 @@
+pub mod context_menu;
 pub mod dialogs;
 pub mod drive_picker;
 pub mod ext_panel;

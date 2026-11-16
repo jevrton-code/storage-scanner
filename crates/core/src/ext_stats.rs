@@ -31,7 +31,7 @@ pub fn compute(tree: &Tree) -> Vec<ExtStat> {
     let mut map: HashMap<String, ExtStat> = HashMap::new();
     for id in 0..tree.len() as u32 {
         let n = tree.node(id);
-        if n.is_dir() || n.has(flags::HARDLINK) {
+        if n.is_dir() || n.has(flags::HARDLINK) || n.has(flags::REMOVED) {
             continue;
         }
         let ext = extension_of(tree.name(id));

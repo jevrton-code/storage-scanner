@@ -22,3 +22,24 @@ pub fn show_error(ctx: &egui::Context, err: &ErrorDialog) -> bool {
         });
     !open || close
 }
+
+/// Janela de configurações. Devolve `true` quando a opção de integração com o Explorer mudou.
+pub fn show_settings(ctx: &egui::Context, open: &mut bool, explorer: &mut bool) -> bool {
+    use rust_i18n::t;
+    let mut changed = false;
+    egui::Window::new(t!("settings.title").to_string())
+        .collapsible(false)
+        .resizable(false)
+        .open(open)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            if ui
+                .checkbox(explorer, t!("settings.explorer_integration").to_string())
+                .changed()
+            {
+                changed = true;
+            }
+            ui.weak(t!("settings.explorer_hint").to_string());
+        });
+    changed
+}

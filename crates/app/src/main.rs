@@ -2,6 +2,7 @@
 
 rust_i18n::i18n!("locales", fallback = "pt-BR");
 
+mod actions;
 mod app;
 mod cli;
 mod state;

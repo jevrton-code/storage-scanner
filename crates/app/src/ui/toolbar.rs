@@ -11,6 +11,7 @@ pub struct ToolbarOutput {
     pub analyze: bool,
     pub stop: bool,
     pub refresh_drives: bool,
+    pub open_settings: bool,
 }
 
 pub fn metric_label(m: Metric) -> String {
@@ -65,12 +66,19 @@ pub fn show(
             let edit = ui.add(
                 egui::TextEdit::singleline(path)
                     .hint_text(t!("toolbar.path_hint"))
-                    .desired_width((ui.available_width() - 190.0).max(120.0)),
+                    .desired_width((ui.available_width() - 230.0).max(120.0)),
             );
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 out.analyze = true;
             }
         });
+        if ui
+            .button("⚙")
+            .on_hover_text(t!("toolbar.settings"))
+            .clicked()
+        {
+            out.open_settings = true;
+        }
         if scanning {
             if ui.button(t!("toolbar.stop")).clicked() {
                 out.stop = true;

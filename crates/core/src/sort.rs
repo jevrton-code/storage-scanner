@@ -80,6 +80,7 @@ pub fn sort_children_by(tree: &Tree, id: NodeId, key: SortKey, descending: bool)
 /// Os `n` maiores nós de toda a árvore pela métrica.
 pub fn top_nodes(tree: &Tree, metric: Metric, n: usize, only_files: bool) -> Vec<NodeId> {
     let mut v: Vec<NodeId> = (0..tree.len() as NodeId)
+        .filter(|&i| !tree.node(i).has(crate::flags::REMOVED))
         .filter(|&i| !only_files || !tree.node(i).is_dir())
         .collect();
     let n = n.min(v.len());

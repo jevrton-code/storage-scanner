@@ -1,13 +1,18 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rust_i18n::t;
 use ss_core::Metric;
 use ss_core::format::{format_count, format_size};
+use ss_ops::file_op::Op;
+use ss_ops::{context_menu as native_menu, explorer_integration, open as shell_open, protect};
 use ss_scan::volumes::{self, VolumeInfo};
 use ss_scan::{Labels, ScanError, elevation};
 
+use crate::actions::{self, ActionJob, MenuAction};
 use crate::state::{JobPoll, ScanJob, ScanResult};
+use crate::ui::context_menu::{self, ConfirmDelete, MenuInfo, MenuState};
 use crate::ui::dialogs::{self, ErrorDialog};
 use crate::ui::ext_panel::ExtPanelState;
 use crate::ui::tree_view::TreeViewState;
@@ -29,6 +34,14 @@ pub struct App {
     elevate_error: Option<String>,
     /// Alvo recebido na linha de comando, analisado no primeiro quadro.
     pending_start: bool,
+    // --- ações de arquivo ---
+    hwnd: Option<isize>,
+    ctx_menu: Option<MenuState>,
+    action: Option<ActionJob>,
+    confirm_delete: Option<ConfirmDelete>,
+    settings_open: bool,
+    explorer_registered: bool,
+    notice: Option<String>,
 }
 
 impl App {
@@ -52,6 +65,13 @@ impl App {
             metric: Metric::Size,
             error: None,
             elevate_error: None,
+            hwnd: None,
+            ctx_menu: None,
+            action: None,
+            confirm_delete: None,
+            settings_open: false,
+            explorer_registered: explorer_integration::is_registered(),
+            notice: None,
         }
     }
 
@@ -70,6 +90,10 @@ impl App {
         self.job = Some(ScanJob::start(ctx, target, Self::labels()));
     }
 
+    fn show_error(&mut self, message: String) {
+        self.error = Some(ErrorDialog { message });
+    }
+
     fn poll_job(&mut self) {
         let Some(job) = &self.job else { return };
         match job.poll() {
@@ -78,17 +102,50 @@ impl App {
                 self.tree_view = TreeViewState::new(self.metric);
                 self.highlight_ext = None;
                 self.treemap = TreemapState::new();
+                self.ctx_menu = None;
                 self.result = Some(*result);
                 self.job = None;
             }
             JobPoll::Failed(e) => {
                 self.job = None;
                 if !matches!(e, ScanError::Cancelled) {
-                    self.error = Some(ErrorDialog {
-                        message: t!("scan.error", error = e.to_string()).to_string(),
-                    });
+                    self.show_error(t!("scan.error", error = e.to_string()).to_string());
                 }
             }
+        }
+    }
+
+    /// Acompanha a ação em segundo plano e aplica seu resultado à árvore.
+    fn poll_action(&mut self) {
+        let Some(job) = &self.action else { return };
+        let Some(mut outcome) = job.poll() else {
+            return;
+        };
+        self.action = None;
+        if let Some(r) = &mut self.result
+            && actions::apply_outcome(r, &mut outcome)
+        {
+            self.tree_view.invalidate();
+            if let Some(sel) = self.tree_view.selected
+                && r.tree.is_removed(sel)
+            {
+                self.tree_view.selected = None;
+            }
+            if r.tree.is_removed(self.treemap.zoom) {
+                self.treemap.zoom = ss_core::Tree::ROOT;
+            }
+        }
+        if outcome.cancelled {
+            self.notice = Some(t!("action.cancelled").to_string());
+        }
+        if let Some(e) = outcome.error {
+            self.show_error(t!("action.failed", error = e).to_string());
+        } else if let Some(info) = outcome.info {
+            self.notice = Some(if info.chars().all(|c| c.is_ascii_digit()) {
+                t!("action.compress_partial", n = info).to_string()
+            } else {
+                t!("action.zip_done", path = info).to_string()
+            });
         }
     }
 
@@ -169,19 +226,176 @@ impl App {
                 );
             }
             let events = self.tree_view.show(ui, &r.tree);
-            let _ = events; // seleção/menu de contexto serão usados por treemap e ações
+            if let Some(node) = events.context_menu {
+                self.ctx_menu = Some(MenuState {
+                    node,
+                    pos: ui.ctx().pointer_interact_pos().unwrap_or_default(),
+                });
+            }
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label(t!("app.empty").to_string());
             });
         }
     }
+
+    // ------------------------------------------------------------------ ações
+
+    fn node_path(&self, node: u32) -> Option<PathBuf> {
+        let r = self.result.as_ref()?;
+        if node as usize >= r.tree.len() || r.tree.is_removed(node) {
+            return None;
+        }
+        Some(PathBuf::from(r.tree.path(node)))
+    }
+
+    fn menu_info(&self, node: u32) -> Option<MenuInfo> {
+        let r = self.result.as_ref()?;
+        let path = self.node_path(node)?;
+        let n = r.tree.node(node);
+        let exists = path.exists();
+        let ntfs = volumes::volume_root_of(&path)
+            .map(|root| volumes::volume_info(&root).is_ntfs())
+            .unwrap_or(false);
+        Some(MenuInfo {
+            path: path.display().to_string(),
+            exists,
+            protected: protect::is_protected(&path),
+            ntfs,
+            compressed: n.has(ss_core::flags::COMPRESSED),
+        })
+    }
+
+    fn run_menu_action(&mut self, ctx: &egui::Context, action: MenuAction, node: u32) {
+        let Some(path) = self.node_path(node) else {
+            return;
+        };
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        match action {
+            MenuAction::Open => {
+                if let Err(e) = shell_open::open(&path, self.elevated) {
+                    self.show_error(t!("action.failed", error = e.to_string()).to_string());
+                }
+            }
+            MenuAction::Reveal => {
+                if let Err(e) = shell_open::reveal(&path) {
+                    self.show_error(t!("action.failed", error = e.to_string()).to_string());
+                }
+            }
+            MenuAction::CopyPath => ctx.copy_text(path.display().to_string()),
+            MenuAction::Recycle => {
+                self.start_action(ActionJob::file_op(
+                    ctx,
+                    t!("job.recycle", name = name).to_string(),
+                    Op::Delete { permanent: false },
+                    vec![path],
+                    self.hwnd,
+                ));
+            }
+            MenuAction::DeletePermanent => {
+                let size = self.result.as_ref().map_or(0, |r| r.tree.node(node).size);
+                self.confirm_delete = Some(ConfirmDelete {
+                    paths: vec![path],
+                    size,
+                });
+            }
+            MenuAction::MoveTo | MenuAction::CopyTo => {
+                let Some(dest) = rfd::FileDialog::new().pick_folder() else {
+                    return;
+                };
+                let (op, label) = if action == MenuAction::MoveTo {
+                    (Op::Move { dest_dir: dest }, t!("job.move", name = name))
+                } else {
+                    (Op::Copy { dest_dir: dest }, t!("job.copy", name = name))
+                };
+                self.start_action(ActionJob::file_op(
+                    ctx,
+                    label.to_string(),
+                    op,
+                    vec![path],
+                    self.hwnd,
+                ));
+            }
+            MenuAction::Zip => {
+                self.start_action(ActionJob::zip(
+                    ctx,
+                    t!("job.zip", name = name).to_string(),
+                    vec![path],
+                ));
+            }
+            MenuAction::Compress(enable) => {
+                let label = if enable {
+                    t!("job.ntfs_compress", name = name)
+                } else {
+                    t!("job.ntfs_uncompress", name = name)
+                };
+                self.start_action(ActionJob::ntfs_compress(
+                    ctx,
+                    label.to_string(),
+                    path,
+                    enable,
+                ));
+            }
+            MenuAction::NativeMenu => {
+                if let Some(hwnd) = self.hwnd {
+                    let (x, y) = native_menu::cursor_screen_pos();
+                    if let Err(e) = native_menu::show(hwnd, &path, x, y) {
+                        self.show_error(t!("action.failed", error = e.to_string()).to_string());
+                    }
+                    // O menu do Windows pode ter alterado o item: relê-o.
+                    self.refresh_path(ctx, path);
+                }
+            }
+        }
+    }
+
+    fn start_action(&mut self, job: ActionJob) {
+        if self.action.is_none() {
+            self.action = Some(job);
+        }
+    }
+
+    /// Relê um item (e o enxerta de volta) depois de uma ação feita fora do app.
+    fn refresh_path(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let name = path.display().to_string();
+        let job = ActionJob::refresh(ctx, name, path);
+        self.start_action(job);
+    }
+
+    fn handle_context_menu(&mut self, ctx: &egui::Context) {
+        let Some(state) = &self.ctx_menu else { return };
+        let node = state.node;
+        let Some(info) = self.menu_info(node) else {
+            self.ctx_menu = None;
+            return;
+        };
+        let busy = self.action.is_some();
+        let (action, close) = context_menu::show(ctx, state, &info);
+        if close {
+            self.ctx_menu = None;
+        }
+        if let Some(a) = action
+            && !busy
+        {
+            self.run_menu_action(ctx, a, node);
+        }
+    }
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.hwnd.is_none()
+            && let Ok(h) = frame.window_handle()
+            && let RawWindowHandle::Win32(w) = h.as_raw()
+        {
+            self.hwnd = Some(w.hwnd.get());
+        }
         self.poll_job();
+        self.poll_action();
         if self.pending_start {
             self.pending_start = false;
             self.start_scan(&ctx);
@@ -203,6 +417,9 @@ impl eframe::App for App {
         if tb.refresh_drives {
             self.volumes = volumes::list_volumes();
         }
+        if tb.open_settings {
+            self.settings_open = true;
+        }
         if tb.stop
             && let Some(job) = &self.job
         {
@@ -215,7 +432,13 @@ impl eframe::App for App {
         self.banner(ui);
 
         egui::Panel::bottom("status_bar").show(ui, |ui| {
-            status_bar::show(ui, self.result.as_ref(), self.tree_view.selected);
+            let notice = self.notice.clone();
+            status_bar::show(
+                ui,
+                self.result.as_ref(),
+                self.tree_view.selected,
+                notice.as_deref(),
+            );
         });
 
         if self.job.is_none()
@@ -236,6 +459,12 @@ impl eframe::App for App {
                     );
                     if let Some(id) = ev.select {
                         self.tree_view.reveal(&r.tree, id);
+                    }
+                    if let Some(node) = ev.context {
+                        self.ctx_menu = Some(MenuState {
+                            node,
+                            pos: ui.ctx().pointer_interact_pos().unwrap_or_default(),
+                        });
                     }
                 });
         }
@@ -260,6 +489,54 @@ impl eframe::App for App {
         }
 
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
+
+        self.handle_context_menu(&ctx);
+
+        if let Some(c) = &self.confirm_delete {
+            match context_menu::confirm_delete(&ctx, c) {
+                Some(true) => {
+                    let paths = c.paths.clone();
+                    self.confirm_delete = None;
+                    let label = t!("job.delete_permanent").to_string();
+                    self.start_action(ActionJob::file_op(
+                        &ctx,
+                        label,
+                        Op::Delete { permanent: true },
+                        paths,
+                        self.hwnd,
+                    ));
+                }
+                Some(false) => self.confirm_delete = None,
+                None => {}
+            }
+        }
+
+        if let Some(job) = &self.action
+            && context_menu::job_window(&ctx, job)
+        {
+            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if self.settings_open {
+            let mut registered = self.explorer_registered;
+            if dialogs::show_settings(&ctx, &mut self.settings_open, &mut registered) {
+                let res = if registered {
+                    std::env::current_exe()
+                        .map_err(ss_ops::OpError::from)
+                        .and_then(|exe| {
+                            explorer_integration::register(&exe, &t!("explorer.menu_label"))
+                        })
+                } else {
+                    explorer_integration::unregister()
+                };
+                match res {
+                    Ok(()) => self.explorer_registered = registered,
+                    Err(e) => {
+                        self.show_error(t!("action.failed", error = e.to_string()).to_string())
+                    }
+                }
+            }
+        }
 
         if let Some(err) = &self.error
             && dialogs::show_error(&ctx, err)
