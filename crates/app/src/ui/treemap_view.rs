@@ -7,6 +7,7 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, vec2};
 use rust_i18n::t;
 use ss_core::ext_stats::extension_of;
 use ss_core::format::{format_count, format_size};
+use ss_core::metrics::compression_ratio;
 use ss_core::treemap::{self, Params, TmRect};
 use ss_core::{Metric, NodeId, Tree};
 
@@ -30,6 +31,8 @@ struct Layout {
 struct MeshCache {
     layout_id: u64,
     area: Rect,
+    metric: Metric,
+    highlight: Option<String>,
     mesh: Arc<egui::Mesh>,
 }
 
@@ -71,6 +74,7 @@ impl TreemapState {
         generation: u64,
         metric: Metric,
         selected: Option<NodeId>,
+        highlight_ext: Option<&str>,
     ) -> TreemapEvents {
         let mut events = TreemapEvents::default();
         if self.zoom as usize >= tree.len() {
@@ -105,15 +109,19 @@ impl TreemapState {
         let (sx, sy) = (area.width() / lw, area.height() / lh);
 
         // Malha única, refeita só quando layout/posição/tamanho mudam.
-        let rebuild = self
-            .mesh
-            .as_ref()
-            .is_none_or(|m| m.layout_id != layout_id || m.area != area);
+        let rebuild = self.mesh.as_ref().is_none_or(|m| {
+            m.layout_id != layout_id
+                || m.area != area
+                || m.metric != metric
+                || m.highlight.as_deref() != highlight_ext
+        });
         if rebuild {
-            let mesh = build_mesh(tree, &rects, area, sx, sy);
+            let mesh = build_mesh(tree, &rects, area, (sx, sy), metric, highlight_ext);
             self.mesh = Some(MeshCache {
                 layout_id,
                 area,
+                metric,
+                highlight: highlight_ext.map(str::to_owned),
                 mesh: Arc::new(mesh),
             });
         }
@@ -258,7 +266,15 @@ pub fn ext_color(ext: &str) -> Color32 {
     egui::ecolor::Hsva::new(hue, 0.55, 0.78, 1.0).into()
 }
 
-fn build_mesh(tree: &Tree, rects: &[TmRect], area: Rect, sx: f32, sy: f32) -> egui::Mesh {
+fn build_mesh(
+    tree: &Tree,
+    rects: &[TmRect],
+    area: Rect,
+    (sx, sy): (f32, f32),
+    metric: Metric,
+    highlight: Option<&str>,
+) -> egui::Mesh {
+    let now = theme::now_filetime();
     let mut mesh = egui::Mesh::default();
     mesh.reserve_triangles(rects.len() * 2);
     mesh.reserve_vertices(rects.len() * 4);
@@ -269,21 +285,32 @@ fn build_mesh(tree: &Tree, rects: &[TmRect], area: Rect, sx: f32, sy: f32) -> eg
         );
         let shade = 1.0 - 0.04 * f32::from(r.depth.min(8));
         let color = if !r.leaf {
-            // Fundo da pasta: tom neutro que escurece/clareia levemente por profundidade.
+            // Fundo da pasta: tom neutro que clareia levemente por profundidade.
             let v = (38.0 + 10.0 * f32::from(r.depth.min(6))) as u8;
             Color32::from_rgb(v, v, v + 4)
         } else {
             let node = tree.node(r.node);
+            let mut dimmed = false;
             let base = if node.is_dir() {
+                dimmed = highlight.is_some();
                 theme::dir_color()
             } else {
-                ext_color(&extension_of(tree.name(r.node)))
+                match metric {
+                    Metric::Modified => theme::age_color(node.mtime, now),
+                    Metric::Compression => theme::compression_color(compression_ratio(node) as f32),
+                    _ => {
+                        let ext = extension_of(tree.name(r.node));
+                        dimmed = highlight.is_some_and(|h| h != ext);
+                        ext_color(&ext)
+                    }
+                }
             };
             let [cr, cg, cb, _] = base.to_array();
+            let k = if dimmed { shade * 0.28 } else { shade };
             Color32::from_rgb(
-                (f32::from(cr) * shade) as u8,
-                (f32::from(cg) * shade) as u8,
-                (f32::from(cb) * shade) as u8,
+                (f32::from(cr) * k) as u8,
+                (f32::from(cg) * k) as u8,
+                (f32::from(cb) * k) as u8,
             )
         };
         // Folgas de 0,5 px dão a grade visual entre blocos.

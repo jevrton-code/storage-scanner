@@ -9,6 +9,7 @@ use ss_scan::{Labels, ScanError, elevation};
 
 use crate::state::{JobPoll, ScanJob, ScanResult};
 use crate::ui::dialogs::{self, ErrorDialog};
+use crate::ui::ext_panel::ExtPanelState;
 use crate::ui::tree_view::TreeViewState;
 use crate::ui::treemap_view::TreemapState;
 use crate::ui::{status_bar, theme, toolbar};
@@ -21,6 +22,9 @@ pub struct App {
     result: Option<ScanResult>,
     tree_view: TreeViewState,
     treemap: TreemapState,
+    ext_panel: ExtPanelState,
+    highlight_ext: Option<String>,
+    metric: Metric,
     error: Option<ErrorDialog>,
     elevate_error: Option<String>,
     /// Alvo recebido na linha de comando, analisado no primeiro quadro.
@@ -43,6 +47,9 @@ impl App {
             result: None,
             tree_view: TreeViewState::new(Metric::Size),
             treemap: TreemapState::new(),
+            ext_panel: ExtPanelState::default(),
+            highlight_ext: None,
+            metric: Metric::Size,
             error: None,
             elevate_error: None,
         }
@@ -68,7 +75,8 @@ impl App {
         match job.poll() {
             JobPoll::Running => {}
             JobPoll::Done(result) => {
-                self.tree_view = TreeViewState::new(self.tree_view.metric);
+                self.tree_view = TreeViewState::new(self.metric);
+                self.highlight_ext = None;
                 self.treemap = TreemapState::new();
                 self.result = Some(*result);
                 self.job = None;
@@ -181,8 +189,17 @@ impl eframe::App for App {
 
         let mut tb = toolbar::ToolbarOutput::default();
         egui::Panel::top("toolbar").show(ui, |ui| {
-            tb = toolbar::show(ui, &mut self.path, &self.volumes, self.job.is_some());
+            tb = toolbar::show(
+                ui,
+                &mut self.path,
+                &self.volumes,
+                self.job.is_some(),
+                &mut self.metric,
+            );
         });
+        if self.metric != self.tree_view.metric {
+            self.tree_view.set_metric(self.metric);
+        }
         if tb.refresh_drives {
             self.volumes = volumes::list_volumes();
         }
@@ -213,12 +230,32 @@ impl eframe::App for App {
                         ui,
                         &r.tree,
                         r.generation,
-                        self.tree_view.metric,
+                        self.metric,
                         self.tree_view.selected,
+                        self.highlight_ext.as_deref(),
                     );
                     if let Some(id) = ev.select {
                         self.tree_view.reveal(&r.tree, id);
                     }
+                });
+        }
+
+        if self.job.is_none()
+            && let Some(r) = &self.result
+        {
+            egui::Panel::right("ext_panel")
+                .resizable(true)
+                .default_size(360.0)
+                .min_size(220.0)
+                .show(ui, |ui| {
+                    self.ext_panel.show(
+                        ui,
+                        &r.tree,
+                        &r.ext_stats,
+                        r.generation,
+                        self.metric,
+                        &mut self.highlight_ext,
+                    );
                 });
         }
 

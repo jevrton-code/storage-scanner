@@ -1,5 +1,6 @@
 pub mod dialogs;
 pub mod drive_picker;
+pub mod ext_panel;
 pub mod status_bar;
 pub mod theme;
 pub mod toolbar;

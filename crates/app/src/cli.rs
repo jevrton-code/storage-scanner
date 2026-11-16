@@ -134,7 +134,15 @@ fn print_report(tree: &Tree, top: usize, elapsed: std::time::Duration, errors: u
         format_size(root.size),
         format_count(root.size)
     );
-    println!("Alocado:     {}", format_size(root.allocated));
+    println!(
+        "Alocado:     {} ({} bytes)",
+        format_size(root.allocated),
+        format_count(root.allocated)
+    );
+    println!(
+        "Compressão:  {}",
+        ss_core::format::format_percent(ss_core::metrics::compression_ratio(root))
+    );
     println!("Arquivos:    {}", format_count(root.files.into()));
     println!("Pastas:      {}", format_count(root.dirs.into()));
     println!("Sem acesso:  {}", format_count(errors));

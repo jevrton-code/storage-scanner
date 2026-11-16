@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use ss_core::Tree;
+use ss_core::ext_stats::{self, ExtStat};
 use ss_scan::{Backend, Labels, Progress, ScanError, ScanReport, ScanTarget};
 
 pub struct ScanJob {
@@ -14,13 +15,15 @@ pub struct ScanJob {
     pub cancel: Arc<AtomicBool>,
     pub target: PathBuf,
     pub started: Instant,
-    rx: Receiver<Result<ScanReport, ScanError>>,
+    rx: Receiver<Result<(ScanReport, Vec<ExtStat>), ScanError>>,
 }
 
 pub struct ScanResult {
     pub tree: Arc<Tree>,
     /// Incrementa a cada alteração da árvore (invalida o layout do treemap).
     pub generation: u64,
+    /// Totais por extensão (ordenados por tamanho).
+    pub ext_stats: Vec<ExtStat>,
     pub target: PathBuf,
     pub backend: Backend,
     pub fallback_reason: Option<String>,
@@ -50,7 +53,12 @@ impl ScanJob {
         std::thread::Builder::new()
             .name("scan".into())
             .spawn(move || {
-                let r = ss_scan::scan(&ScanTarget::Path(t), Backend::Auto, &labels, &p, &c);
+                let r = ss_scan::scan(&ScanTarget::Path(t), Backend::Auto, &labels, &p, &c).map(
+                    |rep| {
+                        let stats = ext_stats::compute(&rep.tree);
+                        (rep, stats)
+                    },
+                );
                 let _ = tx.send(r);
                 ctx.request_repaint();
             })
@@ -70,10 +78,11 @@ impl ScanJob {
 
     pub fn poll(&self) -> JobPoll {
         match self.rx.try_recv() {
-            Ok(Ok(report)) => JobPoll::Done(Box::new(ScanResult {
+            Ok(Ok((report, ext_stats))) => JobPoll::Done(Box::new(ScanResult {
                 errors: self.progress.errors.load(Ordering::Relaxed),
                 tree: Arc::new(report.tree),
                 generation: 0,
+                ext_stats,
                 target: self.target.clone(),
                 backend: report.backend,
                 fallback_reason: report.fallback_reason,

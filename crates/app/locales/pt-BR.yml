@@ -2,6 +2,7 @@ app:
   title: "Storage Scanner"
   empty: "Selecione uma unidade ou pasta e clique em Analisar."
 toolbar:
+  metric: "Métrica"
   drive: "Unidade"
   drive_placeholder: "Escolher unidade…"
   refresh_drives: "Atualizar lista de unidades"
@@ -51,3 +52,19 @@ tree:
 treemap:
   tooltip_files: "%{n} arquivos"
   empty: "Nada para exibir"
+metric:
+  size: "Tamanho"
+  allocated: "Alocado"
+  files: "Nº de arquivos"
+  modified: "Última modificação"
+  compression: "Compressão NTFS"
+ext_panel:
+  title: "Tipos de arquivo"
+  type: "Tipo"
+  percent: "%"
+  size: "Tamanho"
+  allocated: "Alocado"
+  count: "Arquivos"
+  none: "(sem extensão)"
+  clear: "Limpar destaque"
+  hint: "Clique em um tipo para destacá-lo no treemap."

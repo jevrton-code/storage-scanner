@@ -1,6 +1,7 @@
 //! Barra de ferramentas: unidade/pasta, Analisar, Parar.
 
 use rust_i18n::t;
+use ss_core::Metric;
 use ss_scan::volumes::VolumeInfo;
 
 use super::drive_picker;
@@ -12,14 +13,37 @@ pub struct ToolbarOutput {
     pub refresh_drives: bool,
 }
 
+pub fn metric_label(m: Metric) -> String {
+    match m {
+        Metric::Size => t!("metric.size"),
+        Metric::Allocated => t!("metric.allocated"),
+        Metric::FileCount => t!("metric.files"),
+        Metric::Modified => t!("metric.modified"),
+        Metric::Compression => t!("metric.compression"),
+    }
+    .to_string()
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     path: &mut String,
     volumes: &[VolumeInfo],
     scanning: bool,
+    metric: &mut Metric,
 ) -> ToolbarOutput {
     let mut out = ToolbarOutput::default();
     ui.horizontal(|ui| {
+        ui.label(t!("toolbar.metric"));
+        egui::ComboBox::from_id_salt("metric_picker")
+            .selected_text(metric_label(*metric))
+            .show_ui(ui, |ui| {
+                for m in Metric::ALL {
+                    if ui.selectable_label(*metric == m, metric_label(m)).clicked() {
+                        *metric = m;
+                    }
+                }
+            });
+        ui.separator();
         ui.add_enabled_ui(!scanning, |ui| {
             if let Some(root) = drive_picker::show(ui, volumes, path) {
                 *path = root;
@@ -41,7 +65,7 @@ pub fn show(
             let edit = ui.add(
                 egui::TextEdit::singleline(path)
                     .hint_text(t!("toolbar.path_hint"))
-                    .desired_width(ui.available_width() - 190.0),
+                    .desired_width((ui.available_width() - 190.0).max(120.0)),
             );
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 out.analyze = true;
